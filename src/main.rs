@@ -62,20 +62,28 @@ impl Filesystem {
     let table = self.memcache[0..self.table_size].to_vec();
 
     let mut last_table_addr = 0;
+    let mut last_data_addr = 0;
     let mut seek_index = 0;
-    while last_table_addr == 0 && (seek_index + 1) < table.len() {
+    loop {
+      if seek_index + 5 >= table.len() {
+        panic!("No more space in the table: E1");
+      }
+
       let size = u16::from_le_bytes([table[seek_index], table[seek_index + 1]]);
 
       if size == 0u16 {
         last_table_addr = seek_index;
         break;
       } else {
+        let data_addr =
+          u16::from_le_bytes([table[seek_index + 2], table[seek_index + 3]]);
+        let data_len =
+          u16::from_le_bytes([table[seek_index + 4], table[seek_index + 5]]);
+
+        last_data_addr = data_addr as usize + data_len as usize;
+
         seek_index += size as usize;
       }
-    }
-
-    if seek_index + 1 >= table.len() {
-      panic!("No more space in the table");
     }
 
     /*
@@ -85,7 +93,7 @@ impl Filesystem {
       - name (utf-8)
     */
     let mut buf: Vec<u8> = vec![0, 0];
-    let data_addr = (self.table_size as u16).to_le_bytes();
+    let data_addr = (last_data_addr as u16).to_le_bytes();
     let data_len = (content_buf.len() as u16).to_le_bytes();
 
     buf.extend_from_slice(&data_addr);
@@ -96,12 +104,16 @@ impl Filesystem {
     buf[0] = buf_len[0];
     buf[1] = buf_len[1];
 
+    if (buf.len() + last_table_addr) > self.table_size {
+      panic!("No more space in the table: E2");
+    }
+
     for (i, b) in buf.iter().enumerate() {
       self.memcache[last_table_addr + i] = *b;
     }
 
     for (i, b) in content_buf.iter().enumerate() {
-      self.memcache[self.table_size + i] = *b;
+      self.memcache[self.table_size + last_data_addr + i] = *b;
     }
 
     self.flush();
