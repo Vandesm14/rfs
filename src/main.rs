@@ -57,17 +57,26 @@ impl Filesystem {
   /// Create a file in the filesystem
   fn create_file(&mut self, filename: String, content: String) {
     let name_buf = filename.as_bytes();
-    let table = self.memcache[0..self.table_size].to_vec();
-    // let last_table_addr = table
-    //   .into_iter()
-    //   .enumerate()
-    //   .rev()
-    //   .find(|(_, b)| *b != 0)
-    //   .unwrap_or((0, 0))
-    //   .0;
-    let last_table_addr = 0;
+    let content_buf = content.as_bytes();
 
-    // let mut buf: Vec<u8> = vec![name_buf.len() as u8];
+    let table = self.memcache[0..self.table_size].to_vec();
+
+    let mut last_table_addr = 0;
+    let mut seek_index = 0;
+    while last_table_addr == 0 && (seek_index + 1) < table.len() {
+      let size = u16::from_le_bytes([table[seek_index], table[seek_index + 1]]);
+
+      if size == 0u16 {
+        last_table_addr = seek_index;
+        break;
+      } else {
+        seek_index += size as usize;
+      }
+    }
+
+    if seek_index + 1 >= table.len() {
+      panic!("No more space in the table");
+    }
 
     /*
       - len of header (u16)
@@ -75,9 +84,6 @@ impl Filesystem {
       - len of data (u16)
       - name (utf-8)
     */
-
-    let content_buf = content.as_bytes();
-
     let mut buf: Vec<u8> = vec![0, 0];
     let data_addr = (self.table_size as u16).to_le_bytes();
     let data_len = (content_buf.len() as u16).to_le_bytes();
@@ -110,8 +116,6 @@ impl Filesystem {
 fn main() {
   let mut filesystem = Filesystem::new("harddrive.bin");
 
-  filesystem.clear();
   filesystem.load();
-
   filesystem.create_file("test.txt".to_string(), "Hello, world!".to_string());
 }
