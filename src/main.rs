@@ -1,4 +1,4 @@
-use std::io::{Read, Seek, Write};
+use std::io::{self, Read, Seek, Write};
 
 #[derive(Debug)]
 struct Filesystem {
@@ -7,6 +7,53 @@ struct Filesystem {
   table_size: usize,
   total_size: usize,
   memcache: Vec<u8>,
+}
+
+struct File {
+  data_addr: u16,
+  data_len: u16,
+  name: String,
+}
+
+impl File {
+  fn read(reader: &mut impl Read) -> io::Result<Self> {
+    let mut size = [0u8; 2];
+    reader.read_exact(&mut size)?;
+    let size = u16::from_le_bytes(size);
+
+    let mut data_addr = [0u8; 2];
+    reader.read_exact(&mut data_addr)?;
+    let data_addr = u16::from_le_bytes(data_addr);
+
+    let mut data_len = [0u8; 2];
+    reader.read_exact(&mut data_len)?;
+    let data_len = u16::from_le_bytes(data_len);
+
+    let mut name = vec![0u8; (size - 6) as usize];
+    reader.read_exact(&mut name)?;
+    let name = String::from_utf8(name).unwrap();
+
+    Ok(Self {
+      data_addr,
+      data_len,
+      name,
+    })
+  }
+
+  fn write(&mut self, writer: &mut impl Write) -> io::Result<()> {
+    let data_addr = self.data_addr.to_le_bytes();
+    let data_len = self.data_len.to_le_bytes();
+    let name_buf = self.name.as_bytes();
+
+    let buf_len = (name_buf.len() + 6).to_le_bytes();
+
+    writer.write_all(&buf_len)?;
+    writer.write_all(&data_addr)?;
+    writer.write_all(&data_len)?;
+    writer.write_all(name_buf)?;
+
+    Ok(())
+  }
 }
 
 impl Filesystem {
@@ -103,6 +150,10 @@ impl Filesystem {
       panic!("No more space in the table: E2");
     }
 
+    if (content_buf.len() + last_data_addr) > self.total_size {
+      panic!("No more space: E3");
+    }
+
     for (i, b) in buf.iter().enumerate() {
       self.memcache[last_table_addr + i] = *b;
     }
@@ -124,5 +175,5 @@ fn main() {
   let mut filesystem = Filesystem::new("harddrive.bin");
 
   filesystem.load();
-  filesystem.create_file("test.txt".to_string(), "Hello, world!".to_string());
+  filesystem.create_file("test.txt".to_string(), "This is some very long content to fill up the data blocks really quickly. This should work well!".to_string());
 }
