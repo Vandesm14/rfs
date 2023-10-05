@@ -48,27 +48,54 @@ impl Filesystem {
 
   /// Clear the file
   fn clear(&mut self) {
-    let buf = vec![0u8; 0];
+    let buf = vec![0u8; self.total_size];
     self.file.seek(std::io::SeekFrom::Start(0)).unwrap();
     self.file.write_all(&buf).unwrap();
+    self.file.seek(std::io::SeekFrom::Start(0)).unwrap();
   }
 
   /// Create a file in the filesystem
   fn create_file(&mut self, filename: String, content: String) {
     let name_buf = filename.as_bytes();
     let table = self.memcache[0..self.table_size].to_vec();
-    let last_table_addr = table
-      .into_iter()
-      .enumerate()
-      .rev()
-      .find(|(_, b)| *b != 0)
-      .unwrap_or((0, 0))
-      .0;
+    // let last_table_addr = table
+    //   .into_iter()
+    //   .enumerate()
+    //   .rev()
+    //   .find(|(_, b)| *b != 0)
+    //   .unwrap_or((0, 0))
+    //   .0;
+    let last_table_addr = 0;
 
-    println!("last_table_addr: {}", last_table_addr);
+    // let mut buf: Vec<u8> = vec![name_buf.len() as u8];
 
-    for (i, b) in name_buf.iter().enumerate() {
-      self.memcache[dbg!(last_table_addr + i)] = *b;
+    /*
+      - len of header (u16)
+      - addr of data (u16)
+      - len of data (u16)
+      - name (utf-8)
+    */
+
+    let content_buf = content.as_bytes();
+
+    let mut buf: Vec<u8> = vec![0, 0];
+    let data_addr = (self.table_size as u16).to_le_bytes();
+    let data_len = (content_buf.len() as u16).to_le_bytes();
+
+    buf.extend_from_slice(&data_addr);
+    buf.extend_from_slice(&data_len);
+    buf.extend_from_slice(name_buf);
+
+    let buf_len = (buf.len() as u16).to_le_bytes();
+    buf[0] = buf_len[0];
+    buf[1] = buf_len[1];
+
+    for (i, b) in buf.iter().enumerate() {
+      self.memcache[last_table_addr + i] = *b;
+    }
+
+    for (i, b) in content_buf.iter().enumerate() {
+      self.memcache[self.table_size + i] = *b;
     }
 
     self.flush();
