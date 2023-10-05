@@ -9,14 +9,9 @@ struct Filesystem {
   memcache: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-enum Delimiters {
-  Separator = 128,
-}
-
 impl Filesystem {
   fn new(path: &str) -> Self {
-    let mut file = std::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
       .create(true)
       .write(true)
       .read(true)
