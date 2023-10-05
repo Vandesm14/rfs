@@ -9,13 +9,13 @@ struct Filesystem {
   memcache: Vec<u8>,
 }
 
-struct File {
+struct FileHeader {
   data_addr: u16,
   data_len: u16,
   name: String,
 }
 
-impl File {
+impl FileHeader {
   fn read(reader: &mut impl Read) -> io::Result<Self> {
     let mut size = [0u8; 2];
     reader.read_exact(&mut size)?;
