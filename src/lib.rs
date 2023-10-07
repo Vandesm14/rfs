@@ -39,10 +39,8 @@ impl FSHeader {
   }
 
   pub fn write(&mut self, writer: &mut impl Write) -> io::Result<()> {
-    let mut buf = self.headers.to_le_bytes().to_vec();
-    buf.push(self.free_addr.to_le_bytes()[0]);
-
-    writer.write_all(&buf)?;
+    writer.write_all(&self.headers.to_le_bytes())?;
+    writer.write_all(&self.free_addr.to_le_bytes())?;
 
     Ok(())
   }
@@ -155,10 +153,10 @@ impl Filesystem {
   /// ```txt
   /// |            bytes             |
   /// | addr | len | name_len | name |
-  /// | 2    | 2   | 2        | 2    |
+  /// | 2    | 2   | 1        | 16   |
   /// ```
   pub const TABLE_ALIGN: usize = 21;
-  pub const TOTAL_HEADERS: usize = 96;
+  pub const TOTAL_HEADERS: usize = 10;
   pub const FS_HEADER_SIZE: usize = 16;
 
   pub fn new(path: &str) -> Self {
@@ -185,10 +183,29 @@ impl Filesystem {
 
   /// Load the virtual disk into memory
   pub fn load(&mut self) {
+    let mut buf = vec![];
     // Load the file into memory
-    let mut buf = vec![0u8];
-    let _ = self.file.read(&mut buf);
+    let _ = self.file.read_to_end(&mut buf);
     self.memcache = buf;
+
+    self.init();
+  }
+
+  /// Initialize the virtual disk
+  fn init(&mut self) {
+    if !self.memcache.is_empty() {
+      return;
+    }
+
+    // Write zeros for the filesystem header and file headers
+    let buf = vec![
+      0u8;
+      Filesystem::FS_HEADER_SIZE
+        + Filesystem::TABLE_ALIGN * Filesystem::TOTAL_HEADERS
+    ];
+
+    self.memcache = buf;
+    self.flush();
   }
 
   /// Create a file in the filesystem
@@ -197,62 +214,51 @@ impl Filesystem {
     filename: String,
     content: String,
   ) -> Result<(), FileSystemError> {
-    // let content_buf = content.as_bytes();
+    let mut cursor = Cursor::new(&mut self.memcache);
 
-    // let table = self.memcache[0..self.table_size].to_vec();
+    // Read the filesystem header
+    cursor.seek(SeekFrom::Start(0)).unwrap();
+    let mut fs_header = FSHeader::read(&mut cursor).unwrap();
 
-    // let mut last_table_addr = 0;
-    // let mut last_data_addr = 0;
-    // let mut seek_index = 0;
-    // loop {
-    //   // If we've reached the end of the table, then we can't write anymore
-    //   if (seek_index + 7) >= table.len() {
-    //     return Err(FileSystemError::NoMoreSpaceInTable);
-    //   }
+    // Check if we have reached max headers
+    if fs_header.headers >= Filesystem::TOTAL_HEADERS as u8 {
+      return Err(FileSystemError::NoMoreSpaceInTable);
+    }
 
-    //   let size = u16::from_le_bytes([table[seek_index], table[seek_index + 1]]);
+    // Calculate the address we will write the header to
+    let header_addr = fs_header.headers as usize * Filesystem::TABLE_ALIGN
+      + Filesystem::FS_HEADER_SIZE;
 
-    //   // If we've hit an empty space, then we can write here
-    //   if size == 0u16 {
-    //     last_table_addr = seek_index;
-    //     break;
-    //   } else {
-    //     // Otherwise, we need to skip over this file header
-    //     let file_header = FileHeader::read(&mut &table[seek_index..]).unwrap();
+    // Calculate the address we will write the data to
+    let data_addr = fs_header.free_addr as usize;
 
-    //     last_data_addr =
-    //       file_header.data_addr as usize + file_header.data_len as usize;
+    // Calculate the start of the data blocks
+    let data_offset = Filesystem::FS_HEADER_SIZE
+      + Filesystem::TABLE_ALIGN * Filesystem::TOTAL_HEADERS;
 
-    //     seek_index += size as usize;
-    //   }
-    // }
+    // Create the file header
+    let mut file_header = FileHeader {
+      data_addr: data_addr as u16,
+      data_len: content.len() as u16,
+      name: filename,
+    };
 
-    // let mut file_header = FileHeader {
-    //   data_addr: last_data_addr as u16,
-    //   data_len: content_buf.len() as u16,
-    //   name: filename,
-    // };
+    // Write the header
+    cursor.seek(SeekFrom::Start(header_addr as u64)).unwrap();
+    file_header.write(&mut cursor).unwrap();
 
-    // // If the file header is too large, then we can't write it
-    // if (file_header.len() > Filesystem::TABLE_SIZE)
-    //   || (file_header.len() + last_table_addr > Filesystem::TABLE_SIZE)
-    // {
-    //   return Err(FileSystemError::NoMoreSpaceInTable);
-    // }
+    // Write the data
+    cursor
+      .seek(SeekFrom::Start((data_addr + data_offset) as u64))
+      .unwrap();
+    cursor.write_all(content.as_bytes()).unwrap();
 
-    // if (last_data_addr + content_buf.len()) > self.data_size {
-    //   return Err(FileSystemError::NoMoreSpace);
-    // }
+    // Update the filesystem header
+    fs_header.headers += 1;
+    fs_header.free_addr = data_addr as u16 + content.len() as u16;
 
-    // let mut cursor = Cursor::new(&mut self.memcache);
-    // cursor
-    //   .seek(SeekFrom::Start(last_table_addr as u64))
-    //   .unwrap();
-    // file_header.write(&mut cursor).unwrap();
-
-    // for (i, b) in content_buf.iter().enumerate() {
-    //   self.memcache[self.table_size + last_data_addr + i] = *b;
-    // }
+    cursor.seek(SeekFrom::Start(0)).unwrap();
+    fs_header.write(&mut cursor).unwrap();
 
     self.flush();
     Ok(())
