@@ -1,4 +1,4 @@
-use std::io::{self, Read, Seek, Write};
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use thiserror::Error;
 
 const TABLE_SIZE: usize = 256;
@@ -54,6 +54,11 @@ pub enum FileHeaderError {
   InvalidUTF8(#[from] std::string::FromUtf8Error),
 }
 
+/// File Header Spec:
+/// - len of header (u16)
+/// - addr of data (u16)
+/// - len of data (u16)
+/// - name (utf-8)
 struct FileHeader {
   data_addr: u16,
   data_len: u16,
@@ -114,7 +119,7 @@ impl FileHeader {
     let data_len = self.data_len.to_le_bytes();
     let name_buf = self.name.as_bytes();
 
-    let buf_len = (name_buf.len() + 6).to_le_bytes();
+    let buf_len = (name_buf.len() as u16 + 6).to_le_bytes();
 
     writer.write_all(&buf_len)?;
     writer.write_all(&data_addr)?;
@@ -122,6 +127,11 @@ impl FileHeader {
     writer.write_all(name_buf)?;
 
     Ok(())
+  }
+
+  /// Get the size of the file header
+  fn len(&self) -> usize {
+    self.name.len() + 6
   }
 }
 
@@ -171,7 +181,6 @@ impl Filesystem {
     filename: String,
     content: String,
   ) -> Result<(), FileSystemError> {
-    let name_buf = filename.as_bytes();
     let content_buf = content.as_bytes();
 
     let table = self.memcache[0..self.table_size].to_vec();
@@ -181,7 +190,7 @@ impl Filesystem {
     let mut seek_index = 0;
     loop {
       // If we've reached the end of the table, then we can't write anymore
-      if seek_index >= table.len() {
+      if (seek_index + 7) >= table.len() {
         return Err(FileSystemError::NoMoreSpaceInTable);
       }
 
@@ -193,8 +202,7 @@ impl Filesystem {
         break;
       } else {
         // Otherwise, we need to skip over this file header
-        let file_header =
-          FileHeader::read(&mut &table[dbg!(seek_index)..]).unwrap();
+        let file_header = FileHeader::read(&mut &table[seek_index..]).unwrap();
 
         last_data_addr =
           file_header.data_addr as usize + file_header.data_len as usize;
@@ -203,46 +211,30 @@ impl Filesystem {
       }
     }
 
-    /*
-      File Header Spec:
-      - len of header (u16)
-      - addr of data (u16)
-      - len of data (u16)
-      - name (utf-8)
-    */
-    let mut buf: Vec<u8> = vec![0, 0];
-    let data_addr = (last_data_addr as u16).to_le_bytes();
-    let data_len = (content_buf.len() as u16).to_le_bytes();
+    let mut file_header = FileHeader {
+      data_addr: last_data_addr as u16,
+      data_len: content_buf.len() as u16,
+      name: filename,
+    };
 
-    buf.extend_from_slice(&data_addr);
-    buf.extend_from_slice(&data_len);
-    buf.extend_from_slice(name_buf);
-
-    let buf_len = (buf.len() as u16).to_le_bytes();
-    buf[0] = buf_len[0];
-    buf[1] = buf_len[1];
-
-    // If the file header is too big, then we can't write it
-    if (buf.len() + last_table_addr) > self.table_size {
+    // If the file header is too large, then we can't write it
+    if (file_header.len() > TABLE_SIZE)
+      || (file_header.len() + last_table_addr > TABLE_SIZE)
+    {
       return Err(FileSystemError::NoMoreSpaceInTable);
     }
 
-    if (content_buf.len() + last_data_addr)
-      > (self.total_size - self.table_size)
-    {
-      return Err(FileSystemError::NoMoreSpace);
-    }
-
-    for (i, b) in buf.iter().enumerate() {
-      self.memcache[last_table_addr + i] = *b;
-    }
+    let mut cursor = Cursor::new(&mut self.memcache);
+    cursor
+      .seek(SeekFrom::Start(last_table_addr as u64))
+      .unwrap();
+    file_header.write(&mut cursor).unwrap();
 
     for (i, b) in content_buf.iter().enumerate() {
       self.memcache[self.table_size + last_data_addr + i] = *b;
     }
 
     self.flush();
-
     Ok(())
   }
 
