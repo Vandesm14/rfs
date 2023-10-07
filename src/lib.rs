@@ -16,6 +16,38 @@ pub enum FileSystemError {
   IO(#[from] io::Error),
 }
 
+#[derive(Debug)]
+/// The header at the top of a virtual disk file
+/// - headers (u8) how many file headers there are
+/// - free_addr (u16) the address of the next free data space
+pub struct FSHeader {
+  headers: u8,
+  free_addr: u16,
+}
+
+impl FSHeader {
+  pub fn read(reader: &mut impl Read) -> io::Result<Self> {
+    let mut headers = [0u8; 1];
+    reader.read_exact(&mut headers)?;
+    let headers = u8::from_le_bytes(headers);
+
+    let mut free_addr = [0u8; 2];
+    reader.read_exact(&mut free_addr)?;
+    let free_addr = u16::from_le_bytes(free_addr);
+
+    Ok(Self { headers, free_addr })
+  }
+
+  pub fn write(&mut self, writer: &mut impl Write) -> io::Result<()> {
+    let mut buf = self.headers.to_le_bytes().to_vec();
+    buf.push(self.free_addr.to_le_bytes()[0]);
+
+    writer.write_all(&buf)?;
+
+    Ok(())
+  }
+}
+
 #[derive(Error, Debug)]
 pub enum FileHeaderError {
   #[error("Could not read file header size")]
@@ -109,38 +141,6 @@ impl FileHeader {
 
   pub fn is_empty(&self) -> bool {
     self.len() == 0
-  }
-}
-
-#[derive(Debug)]
-/// The header at the top of a virtual disk file
-/// - headers (u8) how many file headers there are
-/// - free_addr (u16) the address of the next free data space
-pub struct FSHeader {
-  headers: u8,
-  free_addr: u16,
-}
-
-impl FSHeader {
-  pub fn read(reader: &mut impl Read) -> io::Result<Self> {
-    let mut headers = [0u8; 1];
-    reader.read_exact(&mut headers)?;
-    let headers = u8::from_le_bytes(headers);
-
-    let mut free_addr = [0u8; 2];
-    reader.read_exact(&mut free_addr)?;
-    let free_addr = u16::from_le_bytes(free_addr);
-
-    Ok(Self { headers, free_addr })
-  }
-
-  pub fn write(&mut self, writer: &mut impl Write) -> io::Result<()> {
-    let mut buf = self.headers.to_le_bytes().to_vec();
-    buf.push(self.free_addr.to_le_bytes()[0]);
-
-    writer.write_all(&buf)?;
-
-    Ok(())
   }
 }
 
