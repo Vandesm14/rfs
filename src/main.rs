@@ -1,4 +1,7 @@
 use std::io::{self, Read, Seek, Write};
+use thiserror::Error;
+
+const TABLE_SIZE: usize = 256;
 
 #[derive(Debug)]
 struct Filesystem {
@@ -9,6 +12,48 @@ struct Filesystem {
   memcache: Vec<u8>,
 }
 
+#[derive(Error, Debug)]
+pub enum FileSystemError {
+  #[error(transparent)]
+  FileHeader(#[from] FileHeaderError),
+
+  #[error("No more space in the table")]
+  NoMoreSpaceInTable,
+
+  #[error("No more space in the data")]
+  NoMoreSpace,
+
+  #[error(transparent)]
+  IO(#[from] io::Error),
+}
+
+#[derive(Error, Debug)]
+pub enum FileHeaderError {
+  #[error("Could not read file header size")]
+  FileHeaderSize(io::Error),
+
+  #[error("Could not read data address")]
+  DataAddress(io::Error),
+
+  #[error("Could not read data length")]
+  DataLength(io::Error),
+
+  #[error("Could not read file name")]
+  FileName(io::Error),
+
+  #[error("File header size too small ({0})")]
+  FileHeaderSizeTooSmall(u16),
+
+  #[error("File header size too large ({0})")]
+  FileHeaderSizeTooLarge(u16),
+
+  #[error("File header size mismatch (expected {expected}, actual {actual})")]
+  FileHeaderSizeMismatch { expected: u16, actual: u16 },
+
+  #[error(transparent)]
+  InvalidUTF8(#[from] std::string::FromUtf8Error),
+}
+
 struct FileHeader {
   data_addr: u16,
   data_len: u16,
@@ -16,22 +61,46 @@ struct FileHeader {
 }
 
 impl FileHeader {
-  fn read(reader: &mut impl Read) -> io::Result<Self> {
+  fn read(reader: &mut impl Read) -> Result<Self, FileHeaderError> {
     let mut size = [0u8; 2];
-    reader.read_exact(&mut size)?;
+    reader
+      .read_exact(&mut size)
+      .map_err(FileHeaderError::FileHeaderSize)?;
     let size = u16::from_le_bytes(size);
 
+    // If the total size is less than 7 bytes, then it's invalid
+    // 7 is the minimum size of a file header (6 header bytes plus a single byte for the name)
+    if size < 7 {
+      return Err(FileHeaderError::FileHeaderSizeTooSmall(size));
+    } else if size > TABLE_SIZE as u16 {
+      return Err(FileHeaderError::FileHeaderSizeTooLarge(size));
+    }
+
     let mut data_addr = [0u8; 2];
-    reader.read_exact(&mut data_addr)?;
+    reader
+      .read_exact(&mut data_addr)
+      .map_err(FileHeaderError::DataAddress)?;
     let data_addr = u16::from_le_bytes(data_addr);
 
     let mut data_len = [0u8; 2];
-    reader.read_exact(&mut data_len)?;
+    reader
+      .read_exact(&mut data_len)
+      .map_err(FileHeaderError::DataLength)?;
     let data_len = u16::from_le_bytes(data_len);
 
     let mut name = vec![0u8; (size - 6) as usize];
-    reader.read_exact(&mut name)?;
-    let name = String::from_utf8(name).unwrap();
+    reader
+      .read_exact(&mut name)
+      .map_err(FileHeaderError::FileName)?;
+    let name = String::from_utf8(name)?;
+
+    // If the size doesn't match the actual size of the file header, then it's invalid
+    if size != (6 + name.len()) as u16 {
+      return Err(FileHeaderError::FileHeaderSizeMismatch {
+        expected: size,
+        actual: (6 + name.len()) as u16,
+      });
+    }
 
     Ok(Self {
       data_addr,
@@ -68,8 +137,8 @@ impl Filesystem {
     Self {
       path: path.to_string(),
       file,
-      table_size: 256,
-      total_size: 256 * 3,
+      table_size: TABLE_SIZE,
+      total_size: TABLE_SIZE * 3,
       memcache: vec![],
     }
   }
@@ -97,7 +166,11 @@ impl Filesystem {
   }
 
   /// Create a file in the filesystem
-  fn create_file(&mut self, filename: String, content: String) {
+  fn create_file(
+    &mut self,
+    filename: String,
+    content: String,
+  ) -> Result<(), FileSystemError> {
     let name_buf = filename.as_bytes();
     let content_buf = content.as_bytes();
 
@@ -107,28 +180,31 @@ impl Filesystem {
     let mut last_data_addr = 0;
     let mut seek_index = 0;
     loop {
-      if seek_index + 5 >= table.len() {
-        panic!("No more space in the table: E1");
+      // If we've reached the end of the table, then we can't write anymore
+      if seek_index >= table.len() {
+        return Err(FileSystemError::NoMoreSpaceInTable);
       }
 
       let size = u16::from_le_bytes([table[seek_index], table[seek_index + 1]]);
 
+      // If we've hit an empty space, then we can write here
       if size == 0u16 {
         last_table_addr = seek_index;
         break;
       } else {
-        let data_addr =
-          u16::from_le_bytes([table[seek_index + 2], table[seek_index + 3]]);
-        let data_len =
-          u16::from_le_bytes([table[seek_index + 4], table[seek_index + 5]]);
+        // Otherwise, we need to skip over this file header
+        let file_header =
+          FileHeader::read(&mut &table[dbg!(seek_index)..]).unwrap();
 
-        last_data_addr = data_addr as usize + data_len as usize;
+        last_data_addr =
+          file_header.data_addr as usize + file_header.data_len as usize;
 
         seek_index += size as usize;
       }
     }
 
     /*
+      File Header Spec:
       - len of header (u16)
       - addr of data (u16)
       - len of data (u16)
@@ -146,12 +222,15 @@ impl Filesystem {
     buf[0] = buf_len[0];
     buf[1] = buf_len[1];
 
+    // If the file header is too big, then we can't write it
     if (buf.len() + last_table_addr) > self.table_size {
-      panic!("No more space in the table: E2");
+      return Err(FileSystemError::NoMoreSpaceInTable);
     }
 
-    if (content_buf.len() + last_data_addr) > self.total_size {
-      panic!("No more space: E3");
+    if (content_buf.len() + last_data_addr)
+      > (self.total_size - self.table_size)
+    {
+      return Err(FileSystemError::NoMoreSpace);
     }
 
     for (i, b) in buf.iter().enumerate() {
@@ -163,6 +242,8 @@ impl Filesystem {
     }
 
     self.flush();
+
+    Ok(())
   }
 
   /// Destroy the filesystem (deletes the db file)
@@ -171,9 +252,12 @@ impl Filesystem {
   }
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
   let mut filesystem = Filesystem::new("harddrive.bin");
 
   filesystem.load();
-  filesystem.create_file("test.txt".to_string(), "This is some very long content to fill up the data blocks really quickly. This should work well!".to_string());
+  filesystem
+    .create_file("test.txt".to_string(), "This is a test.".to_string())?;
+
+  Ok(())
 }
