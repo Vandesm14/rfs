@@ -5,6 +5,9 @@ use thiserror::Error;
 pub enum FileSystemError {
   #[error("No more space in the table")]
   NoMoreSpaceInTable,
+
+  #[error("File name is larger than {} bytes", Filesystem::FILENAME_SIZE)]
+  FileNameTooLarge,
 }
 
 #[derive(Debug)]
@@ -110,15 +113,6 @@ impl FileHeader {
 
     Ok(())
   }
-
-  /// Get the size of the file header
-  pub fn len(&self) -> usize {
-    self.name.len() + 6
-  }
-
-  pub fn is_empty(&self) -> bool {
-    self.len() == 0
-  }
 }
 
 #[derive(Debug)]
@@ -137,6 +131,10 @@ impl Filesystem {
   pub const TABLE_ALIGN: usize = 21;
   pub const TOTAL_HEADERS: usize = 10;
   pub const FS_HEADER_SIZE: usize = 16;
+  pub const FILENAME_SIZE: usize = 16;
+
+  pub const TABLE_SIZE: usize =
+    Self::TABLE_ALIGN * Self::TOTAL_HEADERS + Self::FS_HEADER_SIZE;
 
   pub fn new(path: Option<&str>) -> Self {
     if let Some(path) = path {
@@ -189,11 +187,7 @@ impl Filesystem {
     }
 
     // Write zeros for the filesystem header and file headers
-    let buf = vec![
-      0u8;
-      Filesystem::FS_HEADER_SIZE
-        + Filesystem::TABLE_ALIGN * Filesystem::TOTAL_HEADERS
-    ];
+    let buf = vec![0u8; Self::TABLE_SIZE];
 
     self.memcache = buf;
     self.flush();
@@ -206,6 +200,10 @@ impl Filesystem {
     content: String,
   ) -> Result<(), FileSystemError> {
     let mut cursor = Cursor::new(&mut self.memcache);
+
+    if filename.len() > Self::FILENAME_SIZE {
+      return Err(FileSystemError::FileNameTooLarge);
+    }
 
     // Read the filesystem header
     cursor.seek(SeekFrom::Start(0)).unwrap();
@@ -224,8 +222,7 @@ impl Filesystem {
     let data_addr = fs_header.free_addr as usize;
 
     // Calculate the start of the data blocks
-    let data_offset = Filesystem::FS_HEADER_SIZE
-      + Filesystem::TABLE_ALIGN * Filesystem::TOTAL_HEADERS;
+    let data_offset = Filesystem::TABLE_SIZE;
 
     // Create the file header
     let mut file_header = FileHeader {
@@ -275,9 +272,7 @@ mod tests {
     // The filesystem should contain space for all file headers, the filesystem header itself, and the data
     assert_eq!(
       filesystem.memcache.len(),
-      (Filesystem::TABLE_ALIGN * Filesystem::TOTAL_HEADERS)
-        + Filesystem::FS_HEADER_SIZE
-        + content.len()
+      Filesystem::TABLE_SIZE + content.len()
     );
   }
 
@@ -302,10 +297,7 @@ mod tests {
     // The filesystem should contain space for all file headers, the filesystem header itself, and the data
     assert_eq!(
       filesystem.memcache.len(),
-      (Filesystem::TABLE_ALIGN * Filesystem::TOTAL_HEADERS)
-        + Filesystem::FS_HEADER_SIZE
-        + content.len()
-        + content2.len()
+      Filesystem::TABLE_SIZE + content.len() + content2.len()
     );
   }
 
@@ -330,5 +322,21 @@ mod tests {
 
     // The filesystem should return an error
     assert!(matches!(result, Err(FileSystemError::NoMoreSpaceInTable)));
+  }
+
+  #[test]
+  fn test_file_name_too_large() {
+    let mut filesystem = Filesystem::new(None);
+
+    let title = "this is a file with a name that is too large.txt";
+    let content = "This is a test.";
+
+    filesystem.load();
+
+    // Create a file with a name that is too large
+    let result = filesystem.create_file(title.to_string(), content.to_string());
+
+    // The filesystem should return an error
+    assert!(matches!(result, Err(FileSystemError::FileNameTooLarge)));
   }
 }
