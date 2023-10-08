@@ -5,9 +5,6 @@ use thiserror::Error;
 pub enum FileSystemError {
   #[error("No more space in the table")]
   NoMoreSpaceInTable,
-
-  #[error(transparent)]
-  IO(#[from] io::Error),
 }
 
 #[derive(Debug)]
