@@ -144,8 +144,8 @@ impl FileHeader {
 
 #[derive(Debug)]
 pub struct Filesystem {
-  pub path: String,
-  pub file: std::fs::File,
+  pub path: Option<String>,
+  pub file: Option<std::fs::File>,
   pub memcache: Vec<u8>,
 }
 
@@ -159,34 +159,46 @@ impl Filesystem {
   pub const TOTAL_HEADERS: usize = 10;
   pub const FS_HEADER_SIZE: usize = 16;
 
-  pub fn new(path: &str) -> Self {
-    let file = std::fs::OpenOptions::new()
-      .create(true)
-      .write(true)
-      .read(true)
-      .open(path)
-      .unwrap();
+  pub fn new(path: Option<&str>) -> Self {
+    if let Some(path) = path {
+      let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .read(true)
+        .open(path)
+        .unwrap();
 
-    Self {
-      path: path.to_string(),
-      file,
-      memcache: vec![],
+      Self {
+        path: Some(path.to_string()),
+        file: Some(file),
+        memcache: vec![],
+      }
+    } else {
+      Self {
+        path: None,
+        file: None,
+        memcache: vec![],
+      }
     }
   }
 
   /// Flush the memory cache to the virtual disk
   pub fn flush(&mut self) {
-    self.file.seek(std::io::SeekFrom::Start(0)).unwrap();
-    let _ = self.file.write(&self.memcache);
-    self.file.seek(std::io::SeekFrom::Start(0)).unwrap();
+    if let Some(file) = &mut self.file {
+      file.seek(std::io::SeekFrom::Start(0)).unwrap();
+      let _ = file.write(&self.memcache);
+      file.seek(std::io::SeekFrom::Start(0)).unwrap();
+    }
   }
 
   /// Load the virtual disk into memory
   pub fn load(&mut self) {
-    let mut buf = vec![];
-    // Load the file into memory
-    let _ = self.file.read_to_end(&mut buf);
-    self.memcache = buf;
+    if let Some(file) = &mut self.file {
+      let mut buf = vec![];
+      // Load the file into memory
+      let _ = file.read_to_end(&mut buf);
+      self.memcache = buf;
+    }
 
     self.init();
   }
@@ -262,5 +274,82 @@ impl Filesystem {
 
     self.flush();
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use crate::{FileSystemError, Filesystem};
+
+  #[test]
+  fn test_create_file() {
+    let mut filesystem = Filesystem::new(None);
+
+    let title = "test.txt";
+    let content = "This is a test.";
+
+    filesystem.load();
+    filesystem
+      .create_file(title.to_string(), content.to_string())
+      .unwrap();
+
+    // The filesystem should contain space for all file headers, the filesystem header itself, and the data
+    assert_eq!(
+      filesystem.memcache.len(),
+      (Filesystem::TABLE_ALIGN * Filesystem::TOTAL_HEADERS)
+        + Filesystem::FS_HEADER_SIZE
+        + content.len()
+    );
+  }
+
+  #[test]
+  fn test_create_different_files() {
+    let mut filesystem = Filesystem::new(None);
+
+    let title = "test.txt";
+    let content = "This is a test.";
+
+    let title2 = "test2.txt";
+    let content2 = "This is another test.";
+
+    filesystem.load();
+    filesystem
+      .create_file(title.to_string(), content.to_string())
+      .unwrap();
+    filesystem
+      .create_file(title2.to_string(), content2.to_string())
+      .unwrap();
+
+    // The filesystem should contain space for all file headers, the filesystem header itself, and the data
+    assert_eq!(
+      filesystem.memcache.len(),
+      (Filesystem::TABLE_ALIGN * Filesystem::TOTAL_HEADERS)
+        + Filesystem::FS_HEADER_SIZE
+        + content.len()
+        + content2.len()
+    );
+  }
+
+  #[test]
+  fn test_too_many_headers() {
+    let mut filesystem = Filesystem::new(None);
+
+    let title = "test.txt";
+    let content = "This is a test.";
+
+    filesystem.load();
+
+    // Create the maximum number of files
+    for _ in 0..Filesystem::TOTAL_HEADERS {
+      filesystem
+        .create_file(title.to_string(), content.to_string())
+        .unwrap();
+    }
+
+    // Try to create another file
+    let result = filesystem.create_file(title.to_string(), content.to_string());
+
+    // The filesystem should return an error
+    assert!(matches!(result, Err(FileSystemError::NoMoreSpaceInTable)));
   }
 }

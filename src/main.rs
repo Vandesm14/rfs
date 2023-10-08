@@ -1,7 +1,7 @@
 use rfs::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-  let mut filesystem = Filesystem::new("harddrive.bin");
+  let mut filesystem = Filesystem::new(Some("harddrive.bin"));
 
   filesystem.load();
   filesystem
