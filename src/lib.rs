@@ -123,16 +123,26 @@ pub struct Filesystem {
 }
 
 impl Filesystem {
-  /// ```txt
-  /// |            bytes             |
-  /// | addr | len | name_len | name |
-  /// | 2    | 2   | 1        | 16   |
-  /// ```
-  pub const TABLE_ALIGN: usize = 21;
-  pub const TOTAL_HEADERS: usize = 10;
+  /// The size of the filesystem header (for storing state)
   pub const FS_HEADER_SIZE: usize = 16;
+
+  // File Header Spec:
+  // ```txt
+  // |            bytes             |
+  // | addr | len | name_len | name |
+  // | 2    | 2   | 1        | 16   |
+  // ```
+
+  /// The max size in bytes of a file name
   pub const FILENAME_SIZE: usize = 16;
 
+  /// The set size of a file header (alignment)
+  pub const TABLE_ALIGN: usize = Self::FILENAME_SIZE + 5;
+
+  /// The total number of file headers that can be stored
+  pub const TOTAL_HEADERS: usize = 10;
+
+  /// The total size of the virtual disk (excluding file data)
   pub const TABLE_SIZE: usize =
     Self::TABLE_ALIGN * Self::TOTAL_HEADERS + Self::FS_HEADER_SIZE;
 
