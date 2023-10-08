@@ -3,14 +3,8 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum FileSystemError {
-  #[error(transparent)]
-  FileHeader(#[from] FileHeaderError),
-
   #[error("No more space in the table")]
   NoMoreSpaceInTable,
-
-  #[error("No more space in the data")]
-  NoMoreSpace,
 
   #[error(transparent)]
   IO(#[from] io::Error),
@@ -48,9 +42,6 @@ impl FSHeader {
 
 #[derive(Error, Debug)]
 pub enum FileHeaderError {
-  #[error("Could not read file header size")]
-  FileHeaderSize(io::Error),
-
   #[error("Could not read data address")]
   DataAddress(io::Error),
 
@@ -59,15 +50,6 @@ pub enum FileHeaderError {
 
   #[error("Could not read file name")]
   FileName(io::Error),
-
-  #[error("File header size too small ({0})")]
-  FileHeaderSizeTooSmall(u16),
-
-  #[error("File header size too large ({0})")]
-  FileHeaderSizeTooLarge(u16),
-
-  #[error("File header size mismatch (expected {expected}, actual {actual})")]
-  FileHeaderSizeMismatch { expected: u16, actual: u16 },
 
   #[error(transparent)]
   InvalidUTF8(#[from] std::string::FromUtf8Error),
