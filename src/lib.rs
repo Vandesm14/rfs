@@ -428,4 +428,28 @@ mod tests {
     // The filesystem should return an error
     assert!(matches!(result, Err(FileSystemError::FileNameTooLarge)));
   }
+
+  #[test]
+  fn test_overwrite_with_same_name() {
+    let mut filesystem = Filesystem::new(None);
+
+    let title = "test.txt";
+    let content = "This is a test.";
+
+    let content2 = "This is another test.";
+
+    filesystem.load();
+    filesystem
+      .create_file(title.to_string(), content.to_string())
+      .unwrap();
+    filesystem
+      .create_file(title.to_string(), content2.to_string())
+      .unwrap();
+
+    // The filesystem should contain the new and old data
+    assert_eq!(
+      stream_len(&mut filesystem.memcache).unwrap() as usize,
+      Filesystem::TABLE_SIZE + content.len() + content2.len()
+    );
+  }
 }
