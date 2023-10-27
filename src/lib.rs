@@ -1,4 +1,4 @@
-use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{self, copy, Cursor, Read, Seek, SeekFrom, Write};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -120,7 +120,7 @@ impl FileHeader {
 pub struct Filesystem {
   pub path: Option<String>,
   pub file: Option<std::fs::File>,
-  pub memcache: Vec<u8>,
+  pub memcache: Cursor<Vec<u8>>,
 }
 
 impl Filesystem {
@@ -159,13 +159,13 @@ impl Filesystem {
       Self {
         path: Some(path.to_string()),
         file: Some(file),
-        memcache: vec![],
+        memcache: Cursor::new(vec![]),
       }
     } else {
       Self {
         path: None,
         file: None,
-        memcache: vec![],
+        memcache: Cursor::new(vec![]),
       }
     }
   }
@@ -174,7 +174,9 @@ impl Filesystem {
   pub fn flush(&mut self) {
     if let Some(file) = &mut self.file {
       file.seek(std::io::SeekFrom::Start(0)).unwrap();
-      let _ = file.write(&self.memcache);
+
+      self.memcache.set_position(0);
+      let _ = copy(&mut self.memcache, file);
       file.seek(std::io::SeekFrom::Start(0)).unwrap();
     }
   }
@@ -182,10 +184,7 @@ impl Filesystem {
   /// Load the virtual disk into memory
   pub fn load(&mut self) {
     if let Some(file) = &mut self.file {
-      let mut buf = vec![];
-      // Load the file into memory
-      let _ = file.read_to_end(&mut buf);
-      self.memcache = buf;
+      let _ = copy(file, &mut self.memcache);
     }
 
     self.init();
@@ -193,36 +192,31 @@ impl Filesystem {
 
   /// Initialize the virtual disk
   fn init(&mut self) {
-    if !self.memcache.is_empty() {
+    if stream_len(&mut self.memcache).unwrap() > 0 {
       return;
     }
 
     // Write zeros for the filesystem header and file headers
     let buf = vec![0u8; Self::TABLE_SIZE];
+    self.memcache.set_position(0);
+    self.memcache.write_all(&buf).unwrap();
 
-    self.memcache = buf;
     self.flush();
   }
 
   /// Scans the header table into memory
   fn scan_headers(&mut self) -> Result<Vec<FileHeader>, FileHeaderError> {
-    let mut cursor = Cursor::new(&mut self.memcache);
     let mut headers: Vec<FileHeader> = vec![];
 
     // Skip the filesystem header
-    cursor
-      .seek(SeekFrom::Start(Self::FS_HEADER_SIZE as u64))
-      .unwrap();
+    self.memcache.set_position(Self::FS_HEADER_SIZE as u64);
 
     for i in 0..Self::TOTAL_HEADERS {
       // Set the cursor position to the start of the header
-      cursor
-        .seek(SeekFrom::Start(
-          (Self::FS_HEADER_SIZE as u64)
-            + (Self::TABLE_ALIGN as u64) * (i as u64),
-        ))
-        .unwrap();
-      let header = FileHeader::read(&mut cursor);
+      self.memcache.set_position(
+        (Self::FS_HEADER_SIZE as u64) + (Self::TABLE_ALIGN as u64) * (i as u64),
+      );
+      let header = FileHeader::read(&mut self.memcache);
 
       headers.push(header?);
     }
@@ -230,17 +224,36 @@ impl Filesystem {
     Ok(headers)
   }
 
-  /// Checks if a file exists in the filesystem
-  fn file_exists(&mut self, filename: String) -> Result<bool, FileHeaderError> {
+  /// Gets a file header from the filesystem
+  fn get_file_header(
+    &mut self,
+    filename: String,
+  ) -> Result<Option<FileHeader>, FileHeaderError> {
     let headers = self.scan_headers()?;
 
     for header in headers {
       if header.name == filename {
-        return Ok(true);
+        return Ok(Some(header));
       }
     }
 
-    Ok(false)
+    Ok(None)
+  }
+
+  /// Gets the address of a file header from the filesystem
+  fn get_file_header_addr(
+    &mut self,
+    filename: String,
+  ) -> Result<Option<usize>, FileHeaderError> {
+    let headers = self.scan_headers()?;
+
+    for (i, header) in headers.iter().enumerate() {
+      if header.name == filename {
+        return Ok(Some(i * Self::TABLE_ALIGN + Self::FS_HEADER_SIZE));
+      }
+    }
+
+    Ok(None)
   }
 
   /// Create a file in the filesystem
@@ -249,28 +262,21 @@ impl Filesystem {
     filename: String,
     content: String,
   ) -> Result<(), FileSystemError> {
-    let mut cursor = Cursor::new(&mut self.memcache);
-
     if filename.len() > Self::FILENAME_SIZE {
       return Err(FileSystemError::FileNameTooLarge);
     }
 
     // Read the filesystem header
-    cursor.seek(SeekFrom::Start(0)).unwrap();
-    let mut fs_header = FSHeader::read(&mut cursor).unwrap();
+    self.memcache.set_position(0);
+    let mut fs_header = FSHeader::read(&mut self.memcache).unwrap();
 
     // Check if we have reached max headers
     if fs_header.headers >= Filesystem::TOTAL_HEADERS as u8 {
       return Err(FileSystemError::NoMoreSpaceInTable);
     }
 
-    // Check if the file already exists
-    if self.file_exists(filename.clone()).unwrap() {
-      return Err(FileSystemError::NoMoreSpaceInTable);
-    }
-
     // Calculate the address we will write the header to
-    let header_addr = fs_header.headers as usize * Filesystem::TABLE_ALIGN
+    let mut header_addr = fs_header.headers as usize * Filesystem::TABLE_ALIGN
       + Filesystem::FS_HEADER_SIZE;
 
     // Calculate the address we will write the data to
@@ -278,6 +284,13 @@ impl Filesystem {
 
     // Calculate the start of the data blocks
     let data_offset = Filesystem::TABLE_SIZE;
+
+    // Check if the file already exists
+    let existing_header_addr =
+      self.get_file_header_addr(filename.clone()).unwrap();
+    if let Some(addr) = existing_header_addr {
+      header_addr = addr;
+    }
 
     // Create the file header
     let mut file_header = FileHeader {
@@ -287,21 +300,22 @@ impl Filesystem {
     };
 
     // Write the header
-    cursor.seek(SeekFrom::Start(header_addr as u64)).unwrap();
-    file_header.write(&mut cursor).unwrap();
+    self.memcache.set_position(header_addr as u64);
+    file_header.write(&mut self.memcache).unwrap();
 
     // Write the data
-    cursor
-      .seek(SeekFrom::Start((data_addr + data_offset) as u64))
-      .unwrap();
-    cursor.write_all(content.as_bytes()).unwrap();
+    self.memcache.set_position((data_addr + data_offset) as u64);
+    self.memcache.write_all(content.as_bytes()).unwrap();
 
     // Update the filesystem header
-    fs_header.headers += 1;
+    if existing_header_addr.is_none() {
+      // If we updated the header, we don't need to increment the header count
+      fs_header.headers += 1;
+    }
     fs_header.free_addr = data_addr as u16 + content.len() as u16;
 
-    cursor.seek(SeekFrom::Start(0)).unwrap();
-    fs_header.write(&mut cursor).unwrap();
+    self.memcache.seek(SeekFrom::Start(0)).unwrap();
+    fs_header.write(&mut self.memcache).unwrap();
 
     self.flush();
     Ok(())
@@ -313,9 +327,24 @@ impl Filesystem {
   }
 }
 
+fn stream_len(cursor: &mut Cursor<Vec<u8>>) -> io::Result<u64> {
+  let old_pos = cursor.stream_position()?;
+  let len = cursor.seek(SeekFrom::End(0))?;
+
+  // Avoid seeking a third time when we were already at the end of the
+  // stream. The branch is usually way cheaper than a seek operation.
+  if old_pos != len {
+    cursor.seek(SeekFrom::Start(old_pos))?;
+  }
+
+  cursor.set_position(0);
+
+  Ok(len)
+}
+
 #[cfg(test)]
 mod tests {
-  use crate::{FileSystemError, Filesystem};
+  use crate::{stream_len, FileSystemError, Filesystem};
 
   #[test]
   fn test_create_file() {
@@ -331,7 +360,7 @@ mod tests {
 
     // The filesystem should contain space for all file headers, the filesystem header itself, and the data
     assert_eq!(
-      filesystem.memcache.len(),
+      stream_len(&mut filesystem.memcache).unwrap() as usize,
       Filesystem::TABLE_SIZE + content.len()
     );
   }
@@ -356,7 +385,7 @@ mod tests {
 
     // The filesystem should contain space for all file headers, the filesystem header itself, and the data
     assert_eq!(
-      filesystem.memcache.len(),
+      stream_len(&mut filesystem.memcache).unwrap() as usize,
       Filesystem::TABLE_SIZE + content.len() + content2.len()
     );
   }
@@ -371,9 +400,9 @@ mod tests {
     filesystem.load();
 
     // Create the maximum number of files
-    for _ in 0..Filesystem::TOTAL_HEADERS {
+    for i in 0..Filesystem::TOTAL_HEADERS {
       filesystem
-        .create_file(title.to_string(), content.to_string())
+        .create_file(format!("{title}{i}"), content.to_string())
         .unwrap();
     }
 
