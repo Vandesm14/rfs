@@ -60,6 +60,7 @@ pub enum FileHeaderError {
 /// - len of data (u16)
 /// - len of name (u8) (max 16)
 /// - name (char bytes; len = len of name)
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FileHeader {
   data_addr: u16,
   data_len: u16,
@@ -203,6 +204,45 @@ impl Filesystem {
     self.flush();
   }
 
+  /// Scans the header table into memory
+  fn scan_headers(&mut self) -> Result<Vec<FileHeader>, FileHeaderError> {
+    let mut cursor = Cursor::new(&mut self.memcache);
+    let mut headers: Vec<FileHeader> = vec![];
+
+    // Skip the filesystem header
+    cursor
+      .seek(SeekFrom::Start(Self::FS_HEADER_SIZE as u64))
+      .unwrap();
+
+    for i in 0..Self::TOTAL_HEADERS {
+      // Set the cursor position to the start of the header
+      cursor
+        .seek(SeekFrom::Start(
+          (Self::FS_HEADER_SIZE as u64)
+            + (Self::TABLE_ALIGN as u64) * (i as u64),
+        ))
+        .unwrap();
+      let header = FileHeader::read(&mut cursor);
+
+      headers.push(header?);
+    }
+
+    Ok(headers)
+  }
+
+  /// Checks if a file exists in the filesystem
+  fn file_exists(&mut self, filename: String) -> Result<bool, FileHeaderError> {
+    let headers = self.scan_headers()?;
+
+    for header in headers {
+      if header.name == filename {
+        return Ok(true);
+      }
+    }
+
+    Ok(false)
+  }
+
   /// Create a file in the filesystem
   pub fn create_file(
     &mut self,
@@ -221,6 +261,11 @@ impl Filesystem {
 
     // Check if we have reached max headers
     if fs_header.headers >= Filesystem::TOTAL_HEADERS as u8 {
+      return Err(FileSystemError::NoMoreSpaceInTable);
+    }
+
+    // Check if the file already exists
+    if self.file_exists(filename.clone()).unwrap() {
       return Err(FileSystemError::NoMoreSpaceInTable);
     }
 
@@ -260,6 +305,11 @@ impl Filesystem {
 
     self.flush();
     Ok(())
+  }
+
+  /// Read a file from the filesystem
+  pub fn read_file() {
+    todo!();
   }
 }
 
