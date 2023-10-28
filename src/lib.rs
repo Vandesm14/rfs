@@ -62,13 +62,24 @@ pub enum FileHeaderError {
 /// - name (char bytes; len = len of name)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FileHeader {
+  /// The address of the data (relative to the start of the data table)
   data_addr: u16,
+
+  /// The length of the data
   data_len: u16,
+
+  /// The name of the file
   name: String,
+
+  /// The address of the file header in the table
+  addr: u16,
 }
 
 impl FileHeader {
-  pub fn read(reader: &mut impl Read) -> Result<Self, FileHeaderError> {
+  pub fn read(
+    reader: &mut impl Read,
+    addr: u16,
+  ) -> Result<Self, FileHeaderError> {
     let mut data_addr = [0u8; 2];
     reader
       .read_exact(&mut data_addr)
@@ -97,6 +108,7 @@ impl FileHeader {
       data_addr,
       data_len,
       name,
+      addr,
     })
   }
 
@@ -213,10 +225,9 @@ impl Filesystem {
 
     for i in 0..Self::TOTAL_HEADERS {
       // Set the cursor position to the start of the header
-      self.memcache.set_position(
-        (Self::FS_HEADER_SIZE as u64) + (Self::TABLE_ALIGN as u64) * (i as u64),
-      );
-      let header = FileHeader::read(&mut self.memcache);
+      let addr = Self::FS_HEADER_SIZE + Self::TABLE_ALIGN * i;
+      self.memcache.set_position(addr as u64);
+      let header = FileHeader::read(&mut self.memcache, addr as u16);
 
       headers.push(header?);
     }
@@ -234,22 +245,6 @@ impl Filesystem {
     for header in headers {
       if header.name == filename {
         return Ok(Some(header));
-      }
-    }
-
-    Ok(None)
-  }
-
-  /// Gets the address of a file header from the filesystem
-  fn get_file_header_addr(
-    &mut self,
-    filename: String,
-  ) -> Result<Option<usize>, FileHeaderError> {
-    let headers = self.scan_headers()?;
-
-    for (i, header) in headers.iter().enumerate() {
-      if header.name == filename {
-        return Ok(Some(i * Self::TABLE_ALIGN + Self::FS_HEADER_SIZE));
       }
     }
 
@@ -300,10 +295,9 @@ impl Filesystem {
     let data_offset = Filesystem::TABLE_SIZE;
 
     // Check if the file already exists
-    let existing_header_addr =
-      self.get_file_header_addr(filename.clone()).unwrap();
-    if let Some(addr) = existing_header_addr {
-      header_addr = addr;
+    let existing_header = self.get_file_header(filename.clone()).unwrap();
+    if let Some(header) = &existing_header {
+      header_addr = header.addr as usize;
     }
 
     // Create the file header
@@ -311,6 +305,7 @@ impl Filesystem {
       data_addr: data_addr as u16,
       data_len: content.len() as u16,
       name: filename,
+      addr: header_addr as u16,
     };
 
     // Write the header
@@ -322,7 +317,7 @@ impl Filesystem {
     self.memcache.write_all(content.as_bytes()).unwrap();
 
     // Update the filesystem header
-    if existing_header_addr.is_none() {
+    if existing_header.is_none() {
       // If we updated the header, we don't need to increment the header count
       fs_header.headers += 1;
     }
@@ -404,12 +399,21 @@ mod tests {
     );
 
     // The first header should contain the first data
-    let data = filesystem.get_file_data(header).unwrap();
+    let data = filesystem.get_file_data(header.clone()).unwrap();
     assert_eq!(data, content);
 
     // The second header should contain the second data
-    let data2 = filesystem.get_file_data(header2).unwrap();
+    let data2 = filesystem.get_file_data(header2.clone()).unwrap();
     assert_eq!(data2, content2);
+
+    // The first header should be in the first header position
+    assert_eq!(header.addr, Filesystem::FS_HEADER_SIZE as u16);
+
+    // The second header should be in the second header position
+    assert_eq!(
+      header2.addr,
+      (Filesystem::FS_HEADER_SIZE + Filesystem::TABLE_ALIGN) as u16
+    );
   }
 
   #[test]
@@ -474,11 +478,17 @@ mod tests {
     );
 
     // The first header should contain the first data
-    let data = filesystem.get_file_data(header).unwrap();
+    let data = filesystem.get_file_data(header.clone()).unwrap();
     assert_eq!(data, content);
 
     // The second header should contain the second data
-    let data2 = filesystem.get_file_data(header2).unwrap();
+    let data2 = filesystem.get_file_data(header2.clone()).unwrap();
     assert_eq!(data2, content2);
+
+    // The first header should be at the first header position
+    assert_eq!(header.addr, Filesystem::FS_HEADER_SIZE as u16);
+
+    // The second header should be at the same position
+    assert_eq!(header2.addr, Filesystem::FS_HEADER_SIZE as u16);
   }
 }
