@@ -16,6 +16,12 @@ pub enum CreateFileError {
 pub enum ReadFileError {
   #[error("File not found")]
   FileNotFound,
+
+  #[error("Error reading data")]
+  DataReadError,
+
+  #[error("Error reading file header")]
+  FileHeaderReadError,
 }
 
 #[derive(Debug)]
@@ -251,8 +257,32 @@ impl Filesystem {
   }
 
   /// Read a file from the filesystem
-  pub fn read_file() {
-    todo!();
+  pub fn read_file(
+    &mut self,
+    filename: String,
+  ) -> Result<String, ReadFileError> {
+    let header = Self::get_file_header(self, filename);
+
+    // Check if the read was successful
+    match header {
+      // If there was an error reading the header, return an error
+      Err(_) => Err(ReadFileError::FileHeaderReadError),
+
+      // Else, check if the header exists
+      Ok(header) => match header {
+        // If the header does not exist, return an error
+        None => Err(ReadFileError::FileNotFound),
+
+        // If the header exists, read the file data
+        Some(header) => match Self::get_file_data(self, header) {
+          // If there was an error reading the data, return an error
+          Err(_) => Err(ReadFileError::DataReadError),
+
+          // Else, return the data
+          Ok(data) => Ok(data),
+        },
+      },
+    }
   }
 }
 
@@ -410,5 +440,32 @@ mod tests {
 
     // The second header should be at the same position
     assert_eq!(header2.addr, Filesystem::FS_HEADER_SIZE as u16);
+  }
+
+  #[test]
+  fn test_read_file_data() {
+    let mut filesystem = Filesystem::new(None);
+
+    let title = "test.txt";
+    let content = "This is a test.";
+
+    filesystem.load();
+    filesystem
+      .create_file(title.to_string(), content.to_string())
+      .unwrap();
+
+    // The file should contain the data
+    let data = filesystem.read_file(title.to_string()).unwrap();
+    assert_eq!(data, content);
+
+    // Overwrite the file contents with new data
+    let content2 = "This is another test.";
+    filesystem
+      .create_file(title.to_string(), content2.to_string())
+      .unwrap();
+
+    // The file should contain the new data
+    let data2 = filesystem.read_file(title.to_string()).unwrap();
+    assert_eq!(data2, content2);
   }
 }
