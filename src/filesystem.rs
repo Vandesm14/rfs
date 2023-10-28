@@ -192,7 +192,7 @@ impl Filesystem {
   }
 
   /// Create a file in the filesystem
-  pub fn create_file(
+  pub fn write_file(
     &mut self,
     filename: String,
     content: String,
@@ -314,7 +314,7 @@ mod tests {
 
     filesystem.load();
     filesystem
-      .create_file(title.to_string(), content.to_string())
+      .write_file(title.to_string(), content.to_string())
       .unwrap();
 
     // The filesystem should contain space for all file headers, the filesystem header itself, and the data
@@ -336,10 +336,10 @@ mod tests {
 
     filesystem.load();
     let header = filesystem
-      .create_file(title.to_string(), content.to_string())
+      .write_file(title.to_string(), content.to_string())
       .unwrap();
     let header2 = filesystem
-      .create_file(title2.to_string(), content2.to_string())
+      .write_file(title2.to_string(), content2.to_string())
       .unwrap();
 
     // The filesystem should contain space for all file headers, the filesystem header itself, and the data
@@ -378,12 +378,12 @@ mod tests {
     // Create the maximum number of files
     for i in 0..Filesystem::TOTAL_HEADERS {
       filesystem
-        .create_file(format!("{title}{i}"), content.to_string())
+        .write_file(format!("{title}{i}"), content.to_string())
         .unwrap();
     }
 
     // Try to create another file
-    let result = filesystem.create_file(title.to_string(), content.to_string());
+    let result = filesystem.write_file(title.to_string(), content.to_string());
 
     // The filesystem should return an error
     assert!(matches!(result, Err(CreateFileError::NoMoreSpaceInTable)));
@@ -399,7 +399,7 @@ mod tests {
     filesystem.load();
 
     // Create a file with a name that is too large
-    let result = filesystem.create_file(title.to_string(), content.to_string());
+    let result = filesystem.write_file(title.to_string(), content.to_string());
 
     // The filesystem should return an error
     assert!(matches!(result, Err(CreateFileError::FileNameTooLarge)));
@@ -415,10 +415,10 @@ mod tests {
 
     filesystem.load();
     let header = filesystem
-      .create_file(title.to_string(), content.to_string())
+      .write_file(title.to_string(), content.to_string())
       .unwrap();
     let header2 = filesystem
-      .create_file(title.to_string(), content2.to_string())
+      .write_file(title.to_string(), content2.to_string())
       .unwrap();
 
     // The filesystem should contain the new and old data
@@ -451,7 +451,7 @@ mod tests {
 
     filesystem.load();
     filesystem
-      .create_file(title.to_string(), content.to_string())
+      .write_file(title.to_string(), content.to_string())
       .unwrap();
 
     // The file should contain the data
@@ -461,7 +461,7 @@ mod tests {
     // Overwrite the file contents with new data
     let content2 = "This is another test.";
     filesystem
-      .create_file(title.to_string(), content2.to_string())
+      .write_file(title.to_string(), content2.to_string())
       .unwrap();
 
     // The file should contain the new data
