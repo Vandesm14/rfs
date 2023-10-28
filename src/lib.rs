@@ -256,12 +256,26 @@ impl Filesystem {
     Ok(None)
   }
 
+  /// Reads the data of a file given a file header
+  fn get_file_data(
+    &mut self,
+    header: FileHeader,
+  ) -> Result<String, Box<dyn std::error::Error>> {
+    let mut data = vec![0u8; header.data_len as usize];
+    self
+      .memcache
+      .set_position(header.data_addr as u64 + Filesystem::TABLE_SIZE as u64);
+    self.memcache.read_exact(&mut data)?;
+
+    Ok(String::from_utf8(data)?)
+  }
+
   /// Create a file in the filesystem
   pub fn create_file(
     &mut self,
     filename: String,
     content: String,
-  ) -> Result<(), FileSystemError> {
+  ) -> Result<FileHeader, FileSystemError> {
     if filename.len() > Self::FILENAME_SIZE {
       return Err(FileSystemError::FileNameTooLarge);
     }
@@ -318,7 +332,7 @@ impl Filesystem {
     fs_header.write(&mut self.memcache).unwrap();
 
     self.flush();
-    Ok(())
+    Ok(file_header)
   }
 
   /// Read a file from the filesystem
@@ -376,10 +390,10 @@ mod tests {
     let content2 = "This is another test.";
 
     filesystem.load();
-    filesystem
+    let header = filesystem
       .create_file(title.to_string(), content.to_string())
       .unwrap();
-    filesystem
+    let header2 = filesystem
       .create_file(title2.to_string(), content2.to_string())
       .unwrap();
 
@@ -388,6 +402,14 @@ mod tests {
       stream_len(&mut filesystem.memcache).unwrap() as usize,
       Filesystem::TABLE_SIZE + content.len() + content2.len()
     );
+
+    // The first header should contain the first data
+    let data = filesystem.get_file_data(header).unwrap();
+    assert_eq!(data, content);
+
+    // The second header should contain the second data
+    let data2 = filesystem.get_file_data(header2).unwrap();
+    assert_eq!(data2, content2);
   }
 
   #[test]
@@ -435,14 +457,13 @@ mod tests {
 
     let title = "test.txt";
     let content = "This is a test.";
-
     let content2 = "This is another test.";
 
     filesystem.load();
-    filesystem
+    let header = filesystem
       .create_file(title.to_string(), content.to_string())
       .unwrap();
-    filesystem
+    let header2 = filesystem
       .create_file(title.to_string(), content2.to_string())
       .unwrap();
 
@@ -451,5 +472,13 @@ mod tests {
       stream_len(&mut filesystem.memcache).unwrap() as usize,
       Filesystem::TABLE_SIZE + content.len() + content2.len()
     );
+
+    // The first header should contain the first data
+    let data = filesystem.get_file_data(header).unwrap();
+    assert_eq!(data, content);
+
+    // The second header should contain the second data
+    let data2 = filesystem.get_file_data(header2).unwrap();
+    assert_eq!(data2, content2);
   }
 }
