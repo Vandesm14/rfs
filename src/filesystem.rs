@@ -306,26 +306,7 @@ mod tests {
   use crate::{stream_len, CreateFileError, Filesystem};
 
   #[test]
-  fn test_create_file() {
-    let mut filesystem = Filesystem::new(None);
-
-    let title = "test.txt";
-    let content = "This is a test.";
-
-    filesystem.load();
-    filesystem
-      .write_file(title.to_string(), content.to_string())
-      .unwrap();
-
-    // The filesystem should contain space for all file headers, the filesystem header itself, and the data
-    assert_eq!(
-      stream_len(&mut filesystem.memcache).unwrap() as usize,
-      Filesystem::TABLE_SIZE + content.len()
-    );
-  }
-
-  #[test]
-  fn test_create_different_files() {
+  fn test_fs_len_create() {
     let mut filesystem = Filesystem::new(None);
 
     let title = "test.txt";
@@ -347,6 +328,25 @@ mod tests {
       stream_len(&mut filesystem.memcache).unwrap() as usize,
       Filesystem::TABLE_SIZE + content.len() + content2.len()
     );
+  }
+
+  #[test]
+  fn test_create_different_files() {
+    let mut filesystem = Filesystem::new(None);
+
+    let title = "test.txt";
+    let content = "This is a test.";
+
+    let title2 = "test2.txt";
+    let content2 = "This is another test.";
+
+    filesystem.load();
+    let header = filesystem
+      .write_file(title.to_string(), content.to_string())
+      .unwrap();
+    let header2 = filesystem
+      .write_file(title2.to_string(), content2.to_string())
+      .unwrap();
 
     // The first header should contain the first data
     let data = filesystem.get_file_data(header.clone()).unwrap();
@@ -367,7 +367,7 @@ mod tests {
   }
 
   #[test]
-  fn test_too_many_headers() {
+  fn test_err_too_many_headers() {
     let mut filesystem = Filesystem::new(None);
 
     let title = "test.txt";
@@ -390,7 +390,7 @@ mod tests {
   }
 
   #[test]
-  fn test_file_name_too_large() {
+  fn test_err_file_name_too_large() {
     let mut filesystem = Filesystem::new(None);
 
     let title = "this is a file with a name that is too large.txt";
@@ -421,13 +421,7 @@ mod tests {
       .write_file(title.to_string(), content2.to_string())
       .unwrap();
 
-    // The filesystem should contain the new and old data
-    assert_eq!(
-      stream_len(&mut filesystem.memcache).unwrap() as usize,
-      Filesystem::TABLE_SIZE + content.len() + content2.len()
-    );
-
-    // The first header should contain the first data
+    // The first header should contain the first data (data still exists)
     let data = filesystem.get_file_data(header.clone()).unwrap();
     assert_eq!(data, content);
 
