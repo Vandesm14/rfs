@@ -1,13 +1,17 @@
-use rfs::*;
+use std::fs::OpenOptions;
+
+use rfs::filesystem::Filesystem;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-  let mut filesystem = Filesystem::new(Some("harddrive.bin"));
-
-  filesystem.load();
-  filesystem
-    .write_file("test.txt".to_string(), "This is a test.".to_string())?;
-  filesystem
-    .write_file("test2.txt".to_string(), "This is another test.".to_string())?;
+  let mut filesystem = Filesystem::new(
+    OpenOptions::new()
+      .read(true)
+      .write(true)
+      .create(true)
+      .truncate(true)
+      .open("harddrive.bin")?,
+  );
+  filesystem.init(16)?;
 
   Ok(())
 }
