@@ -140,7 +140,6 @@ where
 
   pub fn init(&mut self, size: usize) -> Result<(), BulkError> {
     self.inner.seek(std::io::SeekFrom::Start(0))?;
-    let mut cursor = 0;
     let mut buf = vec![0; size];
 
     let mut needed_size = BlockKindMain::total_size();
@@ -155,29 +154,34 @@ where
       unused_ptr: 0,
     };
 
-    buf[needed_size] = BlockKindHeader::ident();
-    main_super_block.free_header_ptr = needed_size + 1;
+    let mut cursor = needed_size;
 
     needed_size += BlockKindHeader::total_size();
     if size < needed_size {
       return Err(BulkError::TooSmallForHeaderSuperBlock);
     }
 
-    buf[needed_size] = BlockKindTitle::ident();
-    main_super_block.free_title_ptr = needed_size + 1;
+    buf[cursor] = BlockKindHeader::ident();
+    main_super_block.free_header_ptr = cursor + 1;
+    cursor = needed_size;
 
     needed_size += BlockKindTitle::total_size();
     if size < needed_size {
       return Err(BulkError::TooSmallForTitleSuperBlock);
     }
 
-    buf[needed_size] = BlockKindData::ident();
-    main_super_block.free_data_ptr = needed_size + 1;
+    buf[cursor] = BlockKindTitle::ident();
+    main_super_block.free_title_ptr = cursor + 1;
+    cursor = needed_size;
 
     needed_size += BlockKindData::total_size();
     if size < needed_size {
       return Err(BulkError::TooSmallForDataSuperBlock);
     }
+
+    buf[cursor] = BlockKindData::ident();
+    main_super_block.free_data_ptr = cursor + 1;
+    cursor = needed_size;
 
     let main_super_block_bytes = bincode::serialize(&main_super_block);
     match main_super_block_bytes {
