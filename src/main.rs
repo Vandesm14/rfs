@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       .truncate(true)
       .open("harddrive.bin")?,
   );
-  filesystem.init(16)?;
+  filesystem.init(4097 * 3 + 32)?;
 
   Ok(())
 }
