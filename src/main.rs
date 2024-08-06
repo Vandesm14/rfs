@@ -1,6 +1,9 @@
 use std::fs::OpenOptions;
 
-use rfs::filesystem::Filesystem;
+use rfs::filesystem::{
+  BlockAlign, BlockKindData, BlockKindHeader, BlockKindMain, BlockKindTitle,
+  Filesystem,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let mut filesystem = Filesystem::new(
@@ -11,7 +14,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       .truncate(true)
       .open("harddrive.bin")?,
   );
-  filesystem.init(4097 * 3 + 32)?;
+  filesystem.init(
+    BlockKindMain::super_block_size()
+      + BlockKindHeader::super_block_size()
+      + BlockKindTitle::super_block_size()
+      + BlockKindData::super_block_size(),
+  )?;
 
   Ok(())
 }

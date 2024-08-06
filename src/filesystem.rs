@@ -1,17 +1,12 @@
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
-use serde::{Deserialize, Serialize};
+use serde::{ser::SerializeTuple, Serialize, Serializer};
 use thiserror::Error;
 
 pub trait BlockAlign {
+  const HEADER_SIZE: u64;
   const SIZE: u64;
   const COUNT: u64;
-
-  const IDENT: u8;
-
-  fn super_block_size() -> u64 {
-    Self::SIZE * Self::COUNT
-  }
 
   fn block_size() -> u64 {
     Self::SIZE
@@ -21,16 +16,20 @@ pub trait BlockAlign {
     Self::COUNT
   }
 
-  fn ident() -> u8 {
-    Self::IDENT
+  fn header_size() -> u64 {
+    Self::HEADER_SIZE
   }
+
+  fn super_block_size() -> u64 {
+    Self::SIZE * Self::COUNT + Self::HEADER_SIZE
+  }
+
+  fn initial_header() -> Vec<u8>;
 }
 
 #[repr(C)]
-#[derive(
-  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
-)]
-struct BlockKindMain {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct BlockKindMain {
   free_header_ptr: u64,
   free_title_ptr: u64,
   free_data_ptr: u64,
@@ -39,51 +38,60 @@ struct BlockKindMain {
   unused_ptr: u64,
 }
 impl BlockAlign for BlockKindMain {
-  const SIZE: u64 = 32;
-  const COUNT: u64 = 1;
+  const HEADER_SIZE: u64 = 32;
+  const SIZE: u64 = 0;
+  const COUNT: u64 = 0;
 
-  /// This is not used. The main superblock is always at 0x0.
-  const IDENT: u8 = 0;
+  fn initial_header() -> Vec<u8> {
+    [0; Self::HEADER_SIZE as usize].to_vec()
+  }
 }
 
 #[repr(C)]
-#[derive(
-  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
-)]
-struct BlockKindHeader;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct BlockKindHeader;
 impl BlockAlign for BlockKindHeader {
+  const HEADER_SIZE: u64 = 16;
   const SIZE: u64 = 32;
   const COUNT: u64 = 128;
 
-  const IDENT: u8 = 1;
+  fn initial_header() -> Vec<u8> {
+    let ident: u8 = 1;
+    [vec![ident], vec![0; Self::HEADER_SIZE as usize - 1]].concat()
+  }
 }
 
 #[repr(C)]
-#[derive(
-  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
-)]
-struct BlockKindTitle;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct BlockKindTitle;
 impl BlockAlign for BlockKindTitle {
+  const HEADER_SIZE: u64 = 16;
   const SIZE: u64 = 32;
   const COUNT: u64 = 128;
 
-  const IDENT: u8 = 2;
+  fn initial_header() -> Vec<u8> {
+    let ident: u8 = 2;
+    [vec![ident], vec![0; Self::HEADER_SIZE as usize - 1]].concat()
+  }
 }
 
 #[repr(C)]
-#[derive(
-  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
-)]
-struct BlockKindData;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct BlockKindData;
 impl BlockAlign for BlockKindData {
+  const HEADER_SIZE: u64 = 16;
   const SIZE: u64 = 128;
   const COUNT: u64 = 32;
 
-  const IDENT: u8 = 3;
+  fn initial_header() -> Vec<u8> {
+    let ident: u8 = 3;
+    [vec![ident], vec![0; Self::HEADER_SIZE as usize - 1]].concat()
+  }
 }
 
 #[repr(C)]
-struct SuperBlock<T>
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct SuperBlock<T>
 where
   T: BlockAlign,
 {
@@ -91,22 +99,60 @@ where
 }
 
 #[repr(C)]
-struct Block<T>
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct Block<T>
 where
   T: ?Sized,
 {
-  prev_block: usize,
-  next_block: usize,
+  prev_block: u64,
+  next_block: u64,
   data: T,
 }
 
 #[repr(C)]
-struct FileHeader {
-  start_title_block: usize,
-  start_file_block: usize,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct FileHeader {
+  start_title_block: u64,
+  start_file_block: u64,
 }
 
-type FileHeaders = Block<FileHeader>;
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FileTitle {
+  data: Vec<u8>,
+}
+
+impl Serialize for FileTitle {
+  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    let mut ser_tuple = serializer.serialize_tuple(self.data.len())?;
+    for elem in &self.data {
+      ser_tuple.serialize_element(elem)?;
+    }
+    ser_tuple.end()
+  }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FileData {
+  pub data: Vec<u8>,
+}
+
+impl Serialize for FileData {
+  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    let mut ser_tuple = serializer.serialize_tuple(self.data.len())?;
+    for elem in &self.data {
+      ser_tuple.serialize_element(elem)?;
+    }
+    ser_tuple.end()
+  }
+}
 
 #[derive(Debug, Error)]
 pub enum BulkError {
@@ -166,6 +212,7 @@ where
     }
 
     self.inner.write_all(&buf)?;
+
     Ok(())
   }
 
@@ -182,9 +229,9 @@ where
     };
 
     let main_header_bytes = bincode::serialize(&main_header)?;
-
     self.inner.seek(SeekFrom::Start(0))?;
     self.inner.write_all(&main_header_bytes)?;
+
     Ok(())
   }
 
@@ -193,17 +240,72 @@ where
     let title_sb_start = header_sb_start + BlockKindHeader::super_block_size();
     let data_sb_start = title_sb_start + BlockKindTitle::super_block_size();
 
+    // Initialize Header Superblock
     self.inner.seek(SeekFrom::Start(header_sb_start))?;
-    let header_sb_ident = bincode::serialize(&BlockKindHeader::ident())?;
-    self.inner.write_all(&header_sb_ident)?;
+    self.inner.write_all(&BlockKindHeader::initial_header())?;
 
+    let mut prev_block = 0;
+    for _ in 0..BlockKindHeader::block_count() {
+      let cursor = self.inner.stream_position()?;
+      let next_block = cursor + BlockKindHeader::block_size();
+      let header_block = Block::<FileHeader> {
+        prev_block,
+        next_block,
+        data: FileHeader {
+          start_title_block: u64::MAX,
+          start_file_block: u64::MAX,
+        },
+      };
+
+      prev_block = cursor;
+
+      let header_block_bytes = bincode::serialize(&header_block)?;
+      self.inner.write_all(&header_block_bytes)?;
+    }
+
+    // Initialize Title Superblock
     self.inner.seek(SeekFrom::Start(title_sb_start))?;
-    let title_sb_ident = bincode::serialize(&BlockKindTitle::ident())?;
-    self.inner.write_all(&title_sb_ident)?;
+    self.inner.write_all(&BlockKindTitle::initial_header())?;
 
+    let mut prev_block = 0;
+    for _ in 0..BlockKindTitle::block_count() {
+      let cursor = self.inner.stream_position()?;
+      let next_block = cursor + BlockKindTitle::block_size();
+      let title_block = Block::<FileTitle> {
+        prev_block,
+        next_block,
+        data: FileTitle {
+          data: [0; 16].to_vec(),
+        },
+      };
+
+      prev_block = cursor;
+
+      let title_block_bytes = bincode::serialize(&title_block)?;
+      self.inner.write_all(&title_block_bytes)?;
+    }
+
+    // Initialize Data Superblock
     self.inner.seek(SeekFrom::Start(data_sb_start))?;
-    let data_sb_ident = bincode::serialize(&BlockKindData::ident())?;
-    self.inner.write_all(&data_sb_ident)?;
+    self.inner.write_all(&BlockKindData::initial_header())?;
+
+    let mut prev_block = 0;
+    for _ in 0..BlockKindData::block_count() {
+      let cursor = self.inner.stream_position()?;
+      let next_block = cursor + BlockKindData::block_size();
+      let data_block = Block::<FileData> {
+        prev_block,
+        next_block,
+        data: FileData {
+          data: [0; 112].to_vec(),
+        },
+      };
+
+      prev_block = cursor;
+
+      let data_block_bytes = bincode::serialize(&data_block)?;
+      self.inner.write_all(&data_block_bytes)?;
+    }
 
     Ok(())
   }
