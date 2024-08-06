@@ -34,8 +34,9 @@ pub struct BlockKindMain {
   free_title_ptr: u64,
   free_data_ptr: u64,
 
-  /// This is unused but kept for alignment and for future use.
-  unused_ptr: u64,
+  /// Points to the first header of a valid file. If the value is `0`, then
+  /// there is no valid first header.
+  first_header_ptr: u64,
 }
 impl BlockAlign for BlockKindMain {
   const HEADER_SIZE: u64 = 32;
@@ -225,7 +226,7 @@ where
       free_header_ptr: header_sb_start,
       free_title_ptr: title_sb_start,
       free_data_ptr: data_sb_start,
-      unused_ptr: 0,
+      first_header_ptr: 0,
     };
 
     let main_header_bytes = bincode::serialize(&main_header)?;
@@ -245,15 +246,19 @@ where
     self.inner.write_all(&BlockKindHeader::initial_header())?;
 
     let mut prev_block = 0;
-    for _ in 0..BlockKindHeader::block_count() {
+    for i in 0..BlockKindHeader::block_count() {
       let cursor = self.inner.stream_position()?;
-      let next_block = cursor + BlockKindHeader::block_size();
+      let next_block = if i < BlockKindHeader::block_count() - 1 {
+        cursor + BlockKindHeader::block_size()
+      } else {
+        0
+      };
       let header_block = Block::<FileHeader> {
         prev_block,
         next_block,
         data: FileHeader {
-          start_title_block: u64::MAX,
-          start_file_block: u64::MAX,
+          start_title_block: 0,
+          start_file_block: 0,
         },
       };
 
@@ -268,9 +273,13 @@ where
     self.inner.write_all(&BlockKindTitle::initial_header())?;
 
     let mut prev_block = 0;
-    for _ in 0..BlockKindTitle::block_count() {
+    for i in 0..BlockKindTitle::block_count() {
       let cursor = self.inner.stream_position()?;
-      let next_block = cursor + BlockKindTitle::block_size();
+      let next_block = if i < BlockKindTitle::block_count() - 1 {
+        cursor + BlockKindTitle::block_size()
+      } else {
+        0
+      };
       let title_block = Block::<FileTitle> {
         prev_block,
         next_block,
@@ -290,9 +299,13 @@ where
     self.inner.write_all(&BlockKindData::initial_header())?;
 
     let mut prev_block = 0;
-    for _ in 0..BlockKindData::block_count() {
+    for i in 0..BlockKindData::block_count() {
       let cursor = self.inner.stream_position()?;
-      let next_block = cursor + BlockKindData::block_size();
+      let next_block = if i < BlockKindData::block_count() - 1 {
+        cursor + BlockKindData::block_size()
+      } else {
+        0
+      };
       let data_block = Block::<FileData> {
         prev_block,
         next_block,
