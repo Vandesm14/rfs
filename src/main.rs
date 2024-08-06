@@ -14,12 +14,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       .truncate(true)
       .open("harddrive.bin")?,
   );
+
   filesystem.init(
     BlockKindMain::super_block_size()
       + BlockKindHeader::super_block_size()
       + BlockKindTitle::super_block_size()
       + BlockKindData::super_block_size(),
   )?;
+
+  filesystem.insert("main.rs".into(), "Hello, Mr. Filesystem!".into())?;
 
   Ok(())
 }

@@ -156,7 +156,7 @@ impl Serialize for FileData {
 }
 
 #[derive(Debug, Error)]
-pub enum BulkError {
+pub enum InitializationError {
   #[error("filesystem size is too small to allocate a main superblock")]
   TooSmallForMainSuperBlock,
   #[error("filesystem size is too small to allocate a header superblock")]
@@ -171,6 +171,27 @@ pub enum BulkError {
 
   #[error(transparent)]
   Serde(#[from] bincode::Error),
+}
+
+#[derive(Debug, Error)]
+pub enum InsertionError {
+  #[error(transparent)]
+  IO(#[from] io::Error),
+
+  #[error(transparent)]
+  Serde(#[from] bincode::Error),
+}
+
+#[derive(Debug, Error)]
+pub enum FilesystemError {
+  #[error(transparent)]
+  InitializationError(InitializationError),
+}
+
+impl From<InitializationError> for FilesystemError {
+  fn from(value: InitializationError) -> Self {
+    Self::InitializationError(value)
+  }
 }
 
 pub struct Filesystem<T>
@@ -188,28 +209,31 @@ where
     Filesystem { inner }
   }
 
-  fn clear_and_check_size(&mut self, size: u64) -> Result<(), BulkError> {
+  fn clear_and_check_size(
+    &mut self,
+    size: u64,
+  ) -> Result<(), InitializationError> {
     self.inner.seek(SeekFrom::Start(0))?;
     let buf = vec![0; size as usize];
 
     let mut needed_size = BlockKindMain::super_block_size();
     if size < needed_size {
-      return Err(BulkError::TooSmallForMainSuperBlock);
+      return Err(InitializationError::TooSmallForMainSuperBlock);
     }
 
     needed_size += BlockKindHeader::super_block_size();
     if size < needed_size {
-      return Err(BulkError::TooSmallForHeaderSuperBlock);
+      return Err(InitializationError::TooSmallForHeaderSuperBlock);
     }
 
     needed_size += BlockKindTitle::super_block_size();
     if size < needed_size {
-      return Err(BulkError::TooSmallForTitleSuperBlock);
+      return Err(InitializationError::TooSmallForTitleSuperBlock);
     }
 
     needed_size += BlockKindData::super_block_size();
     if size < needed_size {
-      return Err(BulkError::TooSmallForDataSuperBlock);
+      return Err(InitializationError::TooSmallForDataSuperBlock);
     }
 
     self.inner.write_all(&buf)?;
@@ -217,7 +241,7 @@ where
     Ok(())
   }
 
-  fn init_main_header(&mut self) -> Result<(), BulkError> {
+  fn init_main_header(&mut self) -> Result<(), InitializationError> {
     let header_sb_start = BlockKindMain::super_block_size();
     let title_sb_start = header_sb_start + BlockKindHeader::super_block_size();
     let data_sb_start = title_sb_start + BlockKindTitle::super_block_size();
@@ -236,7 +260,7 @@ where
     Ok(())
   }
 
-  fn init_superblocks(&mut self) -> Result<(), BulkError> {
+  fn init_superblocks(&mut self) -> Result<(), InitializationError> {
     let header_sb_start = BlockKindMain::super_block_size();
     let title_sb_start = header_sb_start + BlockKindHeader::super_block_size();
     let data_sb_start = title_sb_start + BlockKindTitle::super_block_size();
@@ -323,11 +347,21 @@ where
     Ok(())
   }
 
-  pub fn init(&mut self, size: u64) -> Result<(), BulkError> {
+  pub fn init(&mut self, size: u64) -> Result<(), FilesystemError> {
     self.clear_and_check_size(size)?;
     self.init_main_header()?;
     self.init_superblocks()?;
 
     Ok(())
+  }
+
+  pub fn insert(
+    &mut self,
+    name: String,
+    data: Vec<u8>,
+  ) -> Result<(), InsertionError> {
+    self.inner.seek(SeekFrom::Start(0))?;
+
+    todo!()
   }
 }
