@@ -7,6 +7,8 @@ pub trait BlockAlign {
   const SIZE: usize;
   const COUNT: usize;
 
+  const IDENT: u8;
+
   fn total_size() -> usize {
     Self::SIZE * Self::COUNT
   }
@@ -17,6 +19,10 @@ pub trait BlockAlign {
 
   fn count() -> usize {
     Self::COUNT
+  }
+
+  fn ident() -> u8 {
+    Self::IDENT
   }
 }
 
@@ -35,6 +41,9 @@ struct BlockKindMain {
 impl BlockAlign for BlockKindMain {
   const SIZE: usize = 32;
   const COUNT: usize = 1;
+
+  /// This is not used. The main superblock is always at 0x0.
+  const IDENT: u8 = 0;
 }
 
 #[repr(C)]
@@ -45,6 +54,8 @@ struct BlockKindHeader;
 impl BlockAlign for BlockKindHeader {
   const SIZE: usize = 32;
   const COUNT: usize = 128;
+
+  const IDENT: u8 = 1;
 }
 
 #[repr(C)]
@@ -55,6 +66,8 @@ struct BlockKindTitle;
 impl BlockAlign for BlockKindTitle {
   const SIZE: usize = 32;
   const COUNT: usize = 128;
+
+  const IDENT: u8 = 2;
 }
 
 #[repr(C)]
@@ -65,6 +78,8 @@ struct BlockKindData;
 impl BlockAlign for BlockKindData {
   const SIZE: usize = 128;
   const COUNT: usize = 32;
+
+  const IDENT: u8 = 3;
 }
 
 #[repr(C)]
@@ -140,26 +155,29 @@ where
       unused_ptr: 0,
     };
 
+    buf[needed_size] = BlockKindHeader::ident();
+    main_super_block.free_header_ptr = needed_size + 1;
+
     needed_size += BlockKindHeader::total_size();
     if size < needed_size {
       return Err(BulkError::TooSmallForHeaderSuperBlock);
     }
 
-    main_super_block.free_header_ptr = needed_size;
+    buf[needed_size] = BlockKindTitle::ident();
+    main_super_block.free_title_ptr = needed_size + 1;
 
     needed_size += BlockKindTitle::total_size();
     if size < needed_size {
       return Err(BulkError::TooSmallForTitleSuperBlock);
     }
 
-    main_super_block.free_title_ptr = needed_size;
+    buf[needed_size] = BlockKindData::ident();
+    main_super_block.free_data_ptr = needed_size + 1;
 
     needed_size += BlockKindData::total_size();
     if size < needed_size {
       return Err(BulkError::TooSmallForDataSuperBlock);
     }
-
-    main_super_block.free_data_ptr = needed_size;
 
     let main_super_block_bytes = bincode::serialize(&main_super_block);
     match main_super_block_bytes {
@@ -172,7 +190,6 @@ where
     }
 
     self.inner.write_all(&buf)?;
-
     Ok(())
   }
 }
