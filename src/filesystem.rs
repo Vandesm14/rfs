@@ -1,23 +1,23 @@
-use std::io::{self, Read, Seek, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub trait BlockAlign {
-  const SIZE: usize;
-  const COUNT: usize;
+  const SIZE: u64;
+  const COUNT: u64;
 
   const IDENT: u8;
 
-  fn total_size() -> usize {
+  fn super_block_size() -> u64 {
     Self::SIZE * Self::COUNT
   }
 
-  fn size() -> usize {
+  fn block_size() -> u64 {
     Self::SIZE
   }
 
-  fn count() -> usize {
+  fn block_count() -> u64 {
     Self::COUNT
   }
 
@@ -31,16 +31,16 @@ pub trait BlockAlign {
   Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
 )]
 struct BlockKindMain {
-  free_header_ptr: usize,
-  free_title_ptr: usize,
-  free_data_ptr: usize,
+  free_header_ptr: u64,
+  free_title_ptr: u64,
+  free_data_ptr: u64,
 
   /// This is unused but kept for alignment and for future use.
-  unused_ptr: usize,
+  unused_ptr: u64,
 }
 impl BlockAlign for BlockKindMain {
-  const SIZE: usize = 32;
-  const COUNT: usize = 1;
+  const SIZE: u64 = 32;
+  const COUNT: u64 = 1;
 
   /// This is not used. The main superblock is always at 0x0.
   const IDENT: u8 = 0;
@@ -52,8 +52,8 @@ impl BlockAlign for BlockKindMain {
 )]
 struct BlockKindHeader;
 impl BlockAlign for BlockKindHeader {
-  const SIZE: usize = 32;
-  const COUNT: usize = 128;
+  const SIZE: u64 = 32;
+  const COUNT: u64 = 128;
 
   const IDENT: u8 = 1;
 }
@@ -64,8 +64,8 @@ impl BlockAlign for BlockKindHeader {
 )]
 struct BlockKindTitle;
 impl BlockAlign for BlockKindTitle {
-  const SIZE: usize = 32;
-  const COUNT: usize = 128;
+  const SIZE: u64 = 32;
+  const COUNT: u64 = 128;
 
   const IDENT: u8 = 2;
 }
@@ -76,8 +76,8 @@ impl BlockAlign for BlockKindTitle {
 )]
 struct BlockKindData;
 impl BlockAlign for BlockKindData {
-  const SIZE: usize = 128;
-  const COUNT: usize = 32;
+  const SIZE: u64 = 128;
+  const COUNT: u64 = 32;
 
   const IDENT: u8 = 3;
 }
@@ -121,6 +121,9 @@ pub enum BulkError {
 
   #[error(transparent)]
   IO(#[from] io::Error),
+
+  #[error(transparent)]
+  Serde(#[from] bincode::Error),
 }
 
 pub struct Filesystem<T>
@@ -138,62 +141,78 @@ where
     Filesystem { inner }
   }
 
-  pub fn init(&mut self, size: usize) -> Result<(), BulkError> {
-    self.inner.seek(std::io::SeekFrom::Start(0))?;
-    let mut buf = vec![0; size];
+  fn clear_and_check_size(&mut self, size: u64) -> Result<(), BulkError> {
+    self.inner.seek(SeekFrom::Start(0))?;
+    let buf = vec![0; size as usize];
 
-    let mut needed_size = BlockKindMain::total_size();
+    let mut needed_size = BlockKindMain::super_block_size();
     if size < needed_size {
       return Err(BulkError::TooSmallForMainSuperBlock);
     }
 
-    let mut main_super_block = BlockKindMain {
-      free_header_ptr: needed_size,
-      free_title_ptr: 0,
-      free_data_ptr: 0,
-      unused_ptr: 0,
-    };
-
-    let mut cursor = needed_size;
-
-    needed_size += BlockKindHeader::total_size();
+    needed_size += BlockKindHeader::super_block_size();
     if size < needed_size {
       return Err(BulkError::TooSmallForHeaderSuperBlock);
     }
 
-    buf[cursor] = BlockKindHeader::ident();
-    main_super_block.free_header_ptr = cursor + 1;
-    cursor = needed_size;
-
-    needed_size += BlockKindTitle::total_size();
+    needed_size += BlockKindTitle::super_block_size();
     if size < needed_size {
       return Err(BulkError::TooSmallForTitleSuperBlock);
     }
 
-    buf[cursor] = BlockKindTitle::ident();
-    main_super_block.free_title_ptr = cursor + 1;
-    cursor = needed_size;
-
-    needed_size += BlockKindData::total_size();
+    needed_size += BlockKindData::super_block_size();
     if size < needed_size {
       return Err(BulkError::TooSmallForDataSuperBlock);
     }
 
-    buf[cursor] = BlockKindData::ident();
-    main_super_block.free_data_ptr = cursor + 1;
-    cursor = needed_size;
-
-    let main_super_block_bytes = bincode::serialize(&main_super_block);
-    match main_super_block_bytes {
-      Ok(bytes) => {
-        for (i, byte) in bytes.into_iter().enumerate() {
-          buf[i] = byte;
-        }
-      }
-      Err(_) => todo!(),
-    }
-
     self.inner.write_all(&buf)?;
+    Ok(())
+  }
+
+  fn init_main_header(&mut self) -> Result<(), BulkError> {
+    let header_sb_start = BlockKindMain::super_block_size();
+    let title_sb_start = header_sb_start + BlockKindHeader::super_block_size();
+    let data_sb_start = title_sb_start + BlockKindTitle::super_block_size();
+
+    let main_header = BlockKindMain {
+      free_header_ptr: header_sb_start,
+      free_title_ptr: title_sb_start,
+      free_data_ptr: data_sb_start,
+      unused_ptr: 0,
+    };
+
+    let main_header_bytes = bincode::serialize(&main_header)?;
+
+    self.inner.seek(SeekFrom::Start(0))?;
+    self.inner.write_all(&main_header_bytes)?;
+    Ok(())
+  }
+
+  fn init_superblocks(&mut self) -> Result<(), BulkError> {
+    let header_sb_start = BlockKindMain::super_block_size();
+    let title_sb_start = header_sb_start + BlockKindHeader::super_block_size();
+    let data_sb_start = title_sb_start + BlockKindTitle::super_block_size();
+
+    self.inner.seek(SeekFrom::Start(header_sb_start))?;
+    let header_sb_ident = bincode::serialize(&BlockKindHeader::ident())?;
+    self.inner.write_all(&header_sb_ident)?;
+
+    self.inner.seek(SeekFrom::Start(title_sb_start))?;
+    let title_sb_ident = bincode::serialize(&BlockKindTitle::ident())?;
+    self.inner.write_all(&title_sb_ident)?;
+
+    self.inner.seek(SeekFrom::Start(data_sb_start))?;
+    let data_sb_ident = bincode::serialize(&BlockKindData::ident())?;
+    self.inner.write_all(&data_sb_ident)?;
+
+    Ok(())
+  }
+
+  pub fn init(&mut self, size: u64) -> Result<(), BulkError> {
+    self.clear_and_check_size(size)?;
+    self.init_main_header()?;
+    self.init_superblocks()?;
+
     Ok(())
   }
 }
