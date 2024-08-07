@@ -22,7 +22,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       + BlockKindData::super_block_size(),
   )?;
 
-  filesystem.insert("main.rs".into(), "Hello, Mr. Filesystem!".into())?;
+  filesystem.insert("hello.txt".into(), "Hello, World!")?;
+  // filesystem.insert("hello2.txt".into(), "Hello, from the filesystem!")?;
 
   Ok(())
 }

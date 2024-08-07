@@ -1,7 +1,11 @@
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
-use serde::{ser::SerializeTuple, Serialize, Serializer};
+use serde::{ser::SerializeTuple, Deserialize, Serialize, Serializer};
 use thiserror::Error;
+
+pub fn pad_with_byte_size(vec: Vec<u8>, size: u64) -> Vec<u8> {
+  [size.to_le_bytes().to_vec(), vec].concat()
+}
 
 pub trait BlockAlign {
   const HEADER_SIZE: u64;
@@ -28,7 +32,9 @@ pub trait BlockAlign {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[derive(
+  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
+)]
 pub struct BlockKindMain {
   free_header_ptr: u64,
   free_title_ptr: u64,
@@ -49,7 +55,9 @@ impl BlockAlign for BlockKindMain {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[derive(
+  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
+)]
 pub struct BlockKindHeader;
 impl BlockAlign for BlockKindHeader {
   const HEADER_SIZE: u64 = 16;
@@ -63,7 +71,9 @@ impl BlockAlign for BlockKindHeader {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[derive(
+  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
+)]
 pub struct BlockKindTitle;
 impl BlockAlign for BlockKindTitle {
   const HEADER_SIZE: u64 = 16;
@@ -77,7 +87,9 @@ impl BlockAlign for BlockKindTitle {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[derive(
+  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
+)]
 pub struct BlockKindData;
 impl BlockAlign for BlockKindData {
   const HEADER_SIZE: u64 = 16;
@@ -91,7 +103,9 @@ impl BlockAlign for BlockKindData {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[derive(
+  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
+)]
 pub struct SuperBlock<T>
 where
   T: BlockAlign,
@@ -100,7 +114,9 @@ where
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[derive(
+  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
+)]
 pub struct Block<T>
 where
   T: ?Sized,
@@ -111,14 +127,16 @@ where
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[derive(
+  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
+)]
 pub struct FileHeader {
   start_title_block: u64,
-  start_file_block: u64,
+  start_data_block: u64,
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct FileTitle {
   data: Vec<u8>,
 }
@@ -137,7 +155,7 @@ impl Serialize for FileTitle {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct FileData {
   pub data: Vec<u8>,
 }
@@ -174,7 +192,7 @@ pub enum InitializationError {
 }
 
 #[derive(Debug, Error)]
-pub enum InsertionError {
+pub enum GenericError {
   #[error(transparent)]
   IO(#[from] io::Error),
 
@@ -247,9 +265,9 @@ where
     let data_sb_start = title_sb_start + BlockKindTitle::super_block_size();
 
     let main_header = BlockKindMain {
-      free_header_ptr: header_sb_start,
-      free_title_ptr: title_sb_start,
-      free_data_ptr: data_sb_start,
+      free_header_ptr: header_sb_start + BlockKindHeader::header_size(),
+      free_title_ptr: title_sb_start + BlockKindTitle::header_size(),
+      free_data_ptr: data_sb_start + BlockKindData::header_size(),
       first_header_ptr: 0,
     };
 
@@ -282,7 +300,7 @@ where
         next_block,
         data: FileHeader {
           start_title_block: 0,
-          start_file_block: 0,
+          start_data_block: 0,
         },
       };
 
@@ -355,13 +373,170 @@ where
     Ok(())
   }
 
-  pub fn insert(
+  fn write_main_header(
     &mut self,
-    name: String,
-    data: Vec<u8>,
-  ) -> Result<(), InsertionError> {
+    main_header: BlockKindMain,
+  ) -> Result<(), GenericError> {
     self.inner.seek(SeekFrom::Start(0))?;
+    let main_header_bytes = bincode::serialize(&main_header)?;
+    self.inner.write_all(&main_header_bytes)?;
 
-    todo!()
+    Ok(())
+  }
+
+  fn write_header_block(
+    &mut self,
+    index: u64,
+    header_block: Block<FileHeader>,
+  ) -> Result<(), GenericError> {
+    self.inner.seek(SeekFrom::Start(index))?;
+    let header_block_bytes = bincode::serialize(&header_block)?;
+    self.inner.write_all(&header_block_bytes)?;
+
+    Ok(())
+  }
+
+  fn write_title_block(
+    &mut self,
+    index: u64,
+    title_block: Block<FileTitle>,
+  ) -> Result<(), GenericError> {
+    self.inner.seek(SeekFrom::Start(index))?;
+    let title_block_bytes = bincode::serialize(&title_block)?;
+    self.inner.write_all(&title_block_bytes)?;
+
+    Ok(())
+  }
+
+  fn write_data_block(
+    &mut self,
+    index: u64,
+    data_block: Block<FileData>,
+  ) -> Result<(), GenericError> {
+    self.inner.seek(SeekFrom::Start(index))?;
+    let data_block_bytes = bincode::serialize(&data_block)?;
+    self.inner.write_all(&data_block_bytes)?;
+
+    Ok(())
+  }
+
+  fn read_main_header(&mut self) -> Result<BlockKindMain, GenericError> {
+    self.inner.seek(SeekFrom::Start(0))?;
+    let main_header =
+      bincode::deserialize_from::<_, BlockKindMain>(&mut self.inner)?;
+    Ok(main_header)
+  }
+
+  fn read_header_block(
+    &mut self,
+    index: u64,
+  ) -> Result<Option<Block<FileHeader>>, GenericError> {
+    if index == 0 {
+      return Ok(None);
+    }
+    self.inner.seek(SeekFrom::Start(index))?;
+    let header_block =
+      bincode::deserialize_from::<_, Block<FileHeader>>(&mut self.inner)?;
+    Ok(Some(header_block))
+  }
+
+  fn read_title_block(
+    &mut self,
+    index: u64,
+  ) -> Result<Option<Block<FileTitle>>, GenericError> {
+    if index == 0 {
+      return Ok(None);
+    }
+    self.inner.seek(SeekFrom::Start(index))?;
+    let mut title_block_bytes = vec![0; BlockKindTitle::SIZE as usize];
+    self.inner.read_exact(&mut title_block_bytes)?;
+    let title_block = bincode::deserialize_from(&title_block_bytes[..])?;
+    Ok(Some(title_block))
+  }
+
+  fn read_data_block(
+    &mut self,
+    index: u64,
+  ) -> Result<Option<Block<FileData>>, GenericError> {
+    if index == 0 {
+      return Ok(None);
+    }
+    self.inner.seek(SeekFrom::Start(index))?;
+    let mut data_block_bytes = vec![0; BlockKindData::SIZE as usize];
+    self.inner.read_exact(&mut data_block_bytes)?;
+    let data_block = bincode::deserialize_from(&data_block_bytes[..])?;
+    Ok(Some(data_block))
+  }
+
+  pub fn insert<D>(&mut self, name: String, data: D) -> Result<(), GenericError>
+  where
+    D: AsRef<[u8]>,
+  {
+    let mut main_header = self.read_main_header()?;
+
+    let free_file_header = self
+      .read_header_block(main_header.free_header_ptr)?
+      .unwrap_or_else(|| todo!("no header block"));
+
+    let prev_file_header =
+      self.read_header_block(free_file_header.prev_block)?;
+    let next_file_header =
+      self.read_header_block(free_file_header.next_block)?;
+
+    let header_block = Block {
+      prev_block: free_file_header.prev_block,
+      next_block: main_header.first_header_ptr,
+      data: FileHeader {
+        start_title_block: main_header.free_title_ptr,
+        start_data_block: main_header.free_data_ptr,
+      },
+    };
+
+    let free_title_block = self
+      .read_title_block(main_header.free_title_ptr)?
+      .unwrap_or_else(|| todo!("no title block"));
+    let free_data_block = self
+      .read_data_block(main_header.free_data_ptr)?
+      .unwrap_or_else(|| todo!("no data block"));
+
+    let title_bytes = name.as_bytes();
+    if title_bytes.len() > 16 {
+      todo!("cannot store files with names greater than 16 bytes");
+    }
+
+    let title_block = Block {
+      prev_block: 0,
+      next_block: 0,
+      data: FileTitle {
+        data: title_bytes.to_vec(),
+      },
+    };
+
+    let mut data_bytes: Vec<u8> = Vec::new();
+    for byte in data.as_ref().bytes() {
+      data_bytes.push(byte?);
+    }
+
+    if data_bytes.len() > 112 {
+      todo!("cannot store files with data greater than 112 bytes");
+    }
+
+    let data_block = Block {
+      prev_block: 0,
+      next_block: 0,
+      data: FileData { data: data_bytes },
+    };
+
+    // Write Ops
+    self.write_header_block(main_header.free_header_ptr, header_block)?;
+    self.write_title_block(main_header.free_title_ptr, title_block)?;
+    self.write_data_block(main_header.free_data_ptr, data_block)?;
+
+    // Main Header
+    main_header.first_header_ptr = main_header.free_header_ptr;
+    main_header.free_title_ptr = free_title_block.next_block;
+    self.write_main_header(main_header)?;
+
+    Ok(())
   }
 }
