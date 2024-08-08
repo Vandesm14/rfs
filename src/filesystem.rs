@@ -1,10 +1,24 @@
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
-use serde::{ser::SerializeTuple, Deserialize, Serialize, Serializer};
 use thiserror::Error;
 
 pub fn pad_with_byte_size(vec: Vec<u8>, size: u64) -> Vec<u8> {
   [size.to_le_bytes().to_vec(), vec].concat()
+}
+
+pub trait FromBytes
+where
+  Self: Sized,
+{
+  fn from_bytes<R>(reader: &mut R) -> Result<Self, io::Error>
+  where
+    R: Read;
+}
+
+pub trait ToBytes {
+  fn to_bytes<W>(&self, writer: &mut W) -> Result<(), io::Error>
+  where
+    W: Write;
 }
 
 pub trait BlockAlign {
@@ -32,9 +46,7 @@ pub trait BlockAlign {
 }
 
 #[repr(C)]
-#[derive(
-  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BlockKindMain {
   free_header_ptr: u64,
   free_title_ptr: u64,
@@ -44,6 +56,7 @@ pub struct BlockKindMain {
   /// there is no valid first header.
   first_header_ptr: u64,
 }
+
 impl BlockAlign for BlockKindMain {
   const HEADER_SIZE: u64 = 32;
   const SIZE: u64 = 0;
@@ -54,10 +67,46 @@ impl BlockAlign for BlockKindMain {
   }
 }
 
+impl ToBytes for BlockKindMain {
+  fn to_bytes<T>(&self, writer: &mut T) -> Result<(), std::io::Error>
+  where
+    T: Write,
+  {
+    writer.write_all(&self.free_header_ptr.to_le_bytes())?;
+    writer.write_all(&self.free_title_ptr.to_le_bytes())?;
+    writer.write_all(&self.free_data_ptr.to_le_bytes())?;
+    writer.write_all(&self.first_header_ptr.to_le_bytes())?;
+
+    Ok(())
+  }
+}
+
+impl FromBytes for BlockKindMain {
+  fn from_bytes<T>(reader: &mut T) -> Result<Self, io::Error>
+  where
+    T: Read,
+  {
+    let mut free_header_ptr = [0; 8];
+    let mut free_title_ptr = [0; 8];
+    let mut free_data_ptr = [0; 8];
+    let mut first_header_ptr = [0; 8];
+
+    reader.read_exact(&mut free_header_ptr)?;
+    reader.read_exact(&mut free_title_ptr)?;
+    reader.read_exact(&mut free_data_ptr)?;
+    reader.read_exact(&mut first_header_ptr)?;
+
+    Ok(Self {
+      free_header_ptr: u64::from_le_bytes(free_header_ptr),
+      free_title_ptr: u64::from_le_bytes(free_title_ptr),
+      free_data_ptr: u64::from_le_bytes(free_data_ptr),
+      first_header_ptr: u64::from_le_bytes(first_header_ptr),
+    })
+  }
+}
+
 #[repr(C)]
-#[derive(
-  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BlockKindHeader;
 impl BlockAlign for BlockKindHeader {
   const HEADER_SIZE: u64 = 16;
@@ -71,9 +120,7 @@ impl BlockAlign for BlockKindHeader {
 }
 
 #[repr(C)]
-#[derive(
-  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BlockKindTitle;
 impl BlockAlign for BlockKindTitle {
   const HEADER_SIZE: u64 = 16;
@@ -87,9 +134,7 @@ impl BlockAlign for BlockKindTitle {
 }
 
 #[repr(C)]
-#[derive(
-  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BlockKindData;
 impl BlockAlign for BlockKindData {
   const HEADER_SIZE: u64 = 16;
@@ -103,73 +148,151 @@ impl BlockAlign for BlockKindData {
 }
 
 #[repr(C)]
-#[derive(
-  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SuperBlock<T>
 where
-  T: BlockAlign,
+  T: BlockAlign + ToBytes + FromBytes,
 {
   blocks: Block<T>,
 }
 
 #[repr(C)]
-#[derive(
-  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Block<T>
 where
-  T: ?Sized,
+  T: ?Sized + ToBytes + FromBytes,
 {
   prev_block: u64,
   next_block: u64,
   data: T,
 }
 
+impl<T> ToBytes for Block<T>
+where
+  T: ?Sized + ToBytes + FromBytes,
+{
+  fn to_bytes<W>(&self, writer: &mut W) -> Result<(), io::Error>
+  where
+    W: Write,
+  {
+    writer.write_all(&self.prev_block.to_le_bytes())?;
+    writer.write_all(&self.next_block.to_le_bytes())?;
+    self.data.to_bytes(writer)?;
+    Ok(())
+  }
+}
+
+impl<T> FromBytes for Block<T>
+where
+  T: ?Sized + ToBytes + FromBytes,
+{
+  fn from_bytes<R>(reader: &mut R) -> Result<Self, io::Error>
+  where
+    R: Read,
+  {
+    let mut prev_block = [0; 8];
+    let mut next_block = [0; 8];
+
+    reader.read_exact(&mut prev_block)?;
+    reader.read_exact(&mut next_block)?;
+
+    let data = T::from_bytes(reader)?;
+
+    Ok(Self {
+      prev_block: u64::from_le_bytes(prev_block),
+      next_block: u64::from_le_bytes(next_block),
+      data,
+    })
+  }
+}
+
 #[repr(C)]
-#[derive(
-  Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FileHeader {
   start_title_block: u64,
   start_data_block: u64,
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
-pub struct FileTitle {
-  data: Vec<u8>,
+impl ToBytes for FileHeader {
+  fn to_bytes<T>(&self, writer: &mut T) -> Result<(), io::Error>
+  where
+    T: Write,
+  {
+    writer.write_all(&self.start_title_block.to_le_bytes())?;
+    writer.write_all(&self.start_data_block.to_le_bytes())?;
+    Ok(())
+  }
 }
 
-impl Serialize for FileTitle {
-  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+impl FromBytes for FileHeader {
+  fn from_bytes<T>(reader: &mut T) -> Result<Self, io::Error>
   where
-    S: Serializer,
+    T: Read,
   {
-    let mut ser_tuple = serializer.serialize_tuple(self.data.len())?;
-    for elem in &self.data {
-      ser_tuple.serialize_element(elem)?;
-    }
-    ser_tuple.end()
+    let mut start_title_block = [0; 8];
+    let mut start_data_block = [0; 8];
+
+    reader.read_exact(&mut start_title_block)?;
+    reader.read_exact(&mut start_data_block)?;
+
+    Ok(Self {
+      start_title_block: u64::from_le_bytes(start_title_block),
+      start_data_block: u64::from_le_bytes(start_data_block),
+    })
   }
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
-pub struct FileData {
-  pub data: Vec<u8>,
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FileTitle {
+  data: [u8; 16],
 }
 
-impl Serialize for FileData {
-  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+impl ToBytes for FileTitle {
+  fn to_bytes<T>(&self, writer: &mut T) -> Result<(), io::Error>
   where
-    S: Serializer,
+    T: Write,
   {
-    let mut ser_tuple = serializer.serialize_tuple(self.data.len())?;
-    for elem in &self.data {
-      ser_tuple.serialize_element(elem)?;
-    }
-    ser_tuple.end()
+    writer.write_all(&self.data)?;
+    Ok(())
+  }
+}
+
+impl FromBytes for FileTitle {
+  fn from_bytes<T>(reader: &mut T) -> Result<Self, io::Error>
+  where
+    T: Read,
+  {
+    let mut data = [0; 16];
+    reader.read_exact(&mut data)?;
+    Ok(Self { data })
+  }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileData {
+  pub data: [u8; 112],
+}
+
+impl ToBytes for FileData {
+  fn to_bytes<T>(&self, writer: &mut T) -> Result<(), io::Error>
+  where
+    T: Write,
+  {
+    writer.write_all(&self.data)?;
+    Ok(())
+  }
+}
+
+impl FromBytes for FileData {
+  fn from_bytes<T>(reader: &mut T) -> Result<Self, io::Error>
+  where
+    T: Read,
+  {
+    let mut data = [0; 112];
+    reader.read_exact(&mut data)?;
+    Ok(Self { data })
   }
 }
 
@@ -186,18 +309,12 @@ pub enum InitializationError {
 
   #[error(transparent)]
   IO(#[from] io::Error),
-
-  #[error(transparent)]
-  Serde(#[from] bincode::Error),
 }
 
 #[derive(Debug, Error)]
 pub enum GenericError {
   #[error(transparent)]
   IO(#[from] io::Error),
-
-  #[error(transparent)]
-  Serde(#[from] bincode::Error),
 }
 
 #[derive(Debug, Error)]
@@ -231,7 +348,7 @@ where
     &mut self,
     size: u64,
   ) -> Result<(), InitializationError> {
-    self.inner.seek(SeekFrom::Start(0))?;
+    self.inner.seek(SeekFrom::Start(0)).unwrap();
     let buf = vec![0; size as usize];
 
     let mut needed_size = BlockKindMain::super_block_size();
@@ -254,7 +371,7 @@ where
       return Err(InitializationError::TooSmallForDataSuperBlock);
     }
 
-    self.inner.write_all(&buf)?;
+    self.inner.write_all(&buf).unwrap();
 
     Ok(())
   }
@@ -271,9 +388,8 @@ where
       first_header_ptr: 0,
     };
 
-    let main_header_bytes = bincode::serialize(&main_header)?;
-    self.inner.seek(SeekFrom::Start(0))?;
-    self.inner.write_all(&main_header_bytes)?;
+    self.inner.seek(SeekFrom::Start(0)).unwrap();
+    main_header.to_bytes(&mut self.inner).unwrap();
 
     Ok(())
   }
@@ -284,12 +400,15 @@ where
     let data_sb_start = title_sb_start + BlockKindTitle::super_block_size();
 
     // Initialize Header Superblock
-    self.inner.seek(SeekFrom::Start(header_sb_start))?;
-    self.inner.write_all(&BlockKindHeader::initial_header())?;
+    self.inner.seek(SeekFrom::Start(header_sb_start)).unwrap();
+    self
+      .inner
+      .write_all(&BlockKindHeader::initial_header())
+      .unwrap();
 
     let mut prev_block = 0;
     for i in 0..BlockKindHeader::block_count() {
-      let cursor = self.inner.stream_position()?;
+      let cursor = self.inner.stream_position().unwrap();
       let next_block = if i < BlockKindHeader::block_count() - 1 {
         cursor + BlockKindHeader::block_size()
       } else {
@@ -306,17 +425,19 @@ where
 
       prev_block = cursor;
 
-      let header_block_bytes = bincode::serialize(&header_block)?;
-      self.inner.write_all(&header_block_bytes)?;
+      header_block.to_bytes(&mut self.inner)?;
     }
 
     // Initialize Title Superblock
-    self.inner.seek(SeekFrom::Start(title_sb_start))?;
-    self.inner.write_all(&BlockKindTitle::initial_header())?;
+    self.inner.seek(SeekFrom::Start(title_sb_start)).unwrap();
+    self
+      .inner
+      .write_all(&BlockKindTitle::initial_header())
+      .unwrap();
 
     let mut prev_block = 0;
     for i in 0..BlockKindTitle::block_count() {
-      let cursor = self.inner.stream_position()?;
+      let cursor = self.inner.stream_position().unwrap();
       let next_block = if i < BlockKindTitle::block_count() - 1 {
         cursor + BlockKindTitle::block_size()
       } else {
@@ -325,24 +446,24 @@ where
       let title_block = Block::<FileTitle> {
         prev_block,
         next_block,
-        data: FileTitle {
-          data: [0; 16].to_vec(),
-        },
+        data: FileTitle { data: [0; 16] },
       };
 
       prev_block = cursor;
 
-      let title_block_bytes = bincode::serialize(&title_block)?;
-      self.inner.write_all(&title_block_bytes)?;
+      title_block.to_bytes(&mut self.inner);
     }
 
     // Initialize Data Superblock
-    self.inner.seek(SeekFrom::Start(data_sb_start))?;
-    self.inner.write_all(&BlockKindData::initial_header())?;
+    self.inner.seek(SeekFrom::Start(data_sb_start)).unwrap();
+    self
+      .inner
+      .write_all(&BlockKindData::initial_header())
+      .unwrap();
 
     let mut prev_block = 0;
     for i in 0..BlockKindData::block_count() {
-      let cursor = self.inner.stream_position()?;
+      let cursor = self.inner.stream_position().unwrap();
       let next_block = if i < BlockKindData::block_count() - 1 {
         cursor + BlockKindData::block_size()
       } else {
@@ -351,24 +472,21 @@ where
       let data_block = Block::<FileData> {
         prev_block,
         next_block,
-        data: FileData {
-          data: [0; 112].to_vec(),
-        },
+        data: FileData { data: [0; 112] },
       };
 
       prev_block = cursor;
 
-      let data_block_bytes = bincode::serialize(&data_block)?;
-      self.inner.write_all(&data_block_bytes)?;
+      data_block.to_bytes(&mut self.inner);
     }
 
     Ok(())
   }
 
   pub fn init(&mut self, size: u64) -> Result<(), FilesystemError> {
-    self.clear_and_check_size(size)?;
-    self.init_main_header()?;
-    self.init_superblocks()?;
+    self.clear_and_check_size(size).unwrap();
+    self.init_main_header().unwrap();
+    self.init_superblocks().unwrap();
 
     Ok(())
   }
@@ -377,9 +495,8 @@ where
     &mut self,
     main_header: BlockKindMain,
   ) -> Result<(), GenericError> {
-    self.inner.seek(SeekFrom::Start(0))?;
-    let main_header_bytes = bincode::serialize(&main_header)?;
-    self.inner.write_all(&main_header_bytes)?;
+    self.inner.seek(SeekFrom::Start(0)).unwrap();
+    main_header.to_bytes(&mut self.inner)?;
 
     Ok(())
   }
@@ -389,9 +506,8 @@ where
     index: u64,
     header_block: Block<FileHeader>,
   ) -> Result<(), GenericError> {
-    self.inner.seek(SeekFrom::Start(index))?;
-    let header_block_bytes = bincode::serialize(&header_block)?;
-    self.inner.write_all(&header_block_bytes)?;
+    self.inner.seek(SeekFrom::Start(index)).unwrap();
+    header_block.to_bytes(&mut self.inner);
 
     Ok(())
   }
@@ -401,9 +517,8 @@ where
     index: u64,
     title_block: Block<FileTitle>,
   ) -> Result<(), GenericError> {
-    self.inner.seek(SeekFrom::Start(index))?;
-    let title_block_bytes = bincode::serialize(&title_block)?;
-    self.inner.write_all(&title_block_bytes)?;
+    self.inner.seek(SeekFrom::Start(index)).unwrap();
+    title_block.to_bytes(&mut self.inner);
 
     Ok(())
   }
@@ -413,17 +528,16 @@ where
     index: u64,
     data_block: Block<FileData>,
   ) -> Result<(), GenericError> {
-    self.inner.seek(SeekFrom::Start(index))?;
-    let data_block_bytes = bincode::serialize(&data_block)?;
-    self.inner.write_all(&data_block_bytes)?;
+    self.inner.seek(SeekFrom::Start(index)).unwrap();
+    data_block.to_bytes(&mut self.inner)?;
 
     Ok(())
   }
 
   fn read_main_header(&mut self) -> Result<BlockKindMain, GenericError> {
-    self.inner.seek(SeekFrom::Start(0))?;
-    let main_header =
-      bincode::deserialize_from::<_, BlockKindMain>(&mut self.inner)?;
+    self.inner.seek(SeekFrom::Start(0)).unwrap();
+    let main_header: BlockKindMain =
+      BlockKindMain::from_bytes(&mut self.inner)?;
     Ok(main_header)
   }
 
@@ -434,9 +548,8 @@ where
     if index == 0 {
       return Ok(None);
     }
-    self.inner.seek(SeekFrom::Start(index))?;
-    let header_block =
-      bincode::deserialize_from::<_, Block<FileHeader>>(&mut self.inner)?;
+    self.inner.seek(SeekFrom::Start(index)).unwrap();
+    let header_block: Block<FileHeader> = Block::from_bytes(&mut self.inner)?;
     Ok(Some(header_block))
   }
 
@@ -447,10 +560,8 @@ where
     if index == 0 {
       return Ok(None);
     }
-    self.inner.seek(SeekFrom::Start(index))?;
-    let mut title_block_bytes = vec![0; BlockKindTitle::SIZE as usize];
-    self.inner.read_exact(&mut title_block_bytes)?;
-    let title_block = bincode::deserialize_from(&title_block_bytes[..])?;
+    self.inner.seek(SeekFrom::Start(index)).unwrap();
+    let title_block: Block<FileTitle> = Block::from_bytes(&mut self.inner)?;
     Ok(Some(title_block))
   }
 
@@ -461,10 +572,8 @@ where
     if index == 0 {
       return Ok(None);
     }
-    self.inner.seek(SeekFrom::Start(index))?;
-    let mut data_block_bytes = vec![0; BlockKindData::SIZE as usize];
-    self.inner.read_exact(&mut data_block_bytes)?;
-    let data_block = bincode::deserialize_from(&data_block_bytes[..])?;
+    self.inner.seek(SeekFrom::Start(index)).unwrap();
+    let data_block: Block<FileData> = Block::from_bytes(&mut self.inner)?;
     Ok(Some(data_block))
   }
 
@@ -472,16 +581,16 @@ where
   where
     D: AsRef<[u8]>,
   {
-    let mut main_header = self.read_main_header()?;
+    let mut main_header = self.read_main_header().unwrap();
 
     let free_file_header = self
       .read_header_block(main_header.free_header_ptr)?
       .unwrap_or_else(|| todo!("no header block"));
 
     let prev_file_header =
-      self.read_header_block(free_file_header.prev_block)?;
+      self.read_header_block(free_file_header.prev_block).unwrap();
     let next_file_header =
-      self.read_header_block(free_file_header.next_block)?;
+      self.read_header_block(free_file_header.next_block).unwrap();
 
     let header_block = Block {
       prev_block: free_file_header.prev_block,
@@ -499,26 +608,26 @@ where
       .read_data_block(main_header.free_data_ptr)?
       .unwrap_or_else(|| todo!("no data block"));
 
-    let title_bytes = name.as_bytes();
+    let mut title_bytes: [u8; 16] = [0; 16];
     if title_bytes.len() > 16 {
       todo!("cannot store files with names greater than 16 bytes");
+    }
+    for (i, byte) in name.as_bytes().iter().enumerate().take(112) {
+      title_bytes[i] = *byte;
     }
 
     let title_block = Block {
       prev_block: 0,
       next_block: 0,
-      data: FileTitle {
-        data: title_bytes.to_vec(),
-      },
+      data: FileTitle { data: title_bytes },
     };
 
-    let mut data_bytes: Vec<u8> = Vec::new();
-    for byte in data.as_ref().bytes() {
-      data_bytes.push(byte?);
-    }
-
+    let mut data_bytes: [u8; 112] = [0; 112];
     if data_bytes.len() > 112 {
       todo!("cannot store files with data greater than 112 bytes");
+    }
+    for (i, byte) in data.as_ref().bytes().enumerate().take(112) {
+      data_bytes[i] = byte?;
     }
 
     let data_block = Block {
@@ -528,14 +637,20 @@ where
     };
 
     // Write Ops
-    self.write_header_block(main_header.free_header_ptr, header_block)?;
-    self.write_title_block(main_header.free_title_ptr, title_block)?;
-    self.write_data_block(main_header.free_data_ptr, data_block)?;
+    self
+      .write_header_block(main_header.free_header_ptr, header_block)
+      .unwrap();
+    self
+      .write_title_block(main_header.free_title_ptr, title_block)
+      .unwrap();
+    self
+      .write_data_block(main_header.free_data_ptr, data_block)
+      .unwrap();
 
     // Main Header
     main_header.first_header_ptr = main_header.free_header_ptr;
     main_header.free_title_ptr = free_title_block.next_block;
-    self.write_main_header(main_header)?;
+    self.write_main_header(main_header).unwrap();
 
     Ok(())
   }
