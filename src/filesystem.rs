@@ -451,7 +451,7 @@ where
 
       prev_block = cursor;
 
-      title_block.to_bytes(&mut self.inner);
+      title_block.to_bytes(&mut self.inner)?;
     }
 
     // Initialize Data Superblock
@@ -477,7 +477,7 @@ where
 
       prev_block = cursor;
 
-      data_block.to_bytes(&mut self.inner);
+      data_block.to_bytes(&mut self.inner)?;
     }
 
     Ok(())
@@ -507,7 +507,7 @@ where
     header_block: Block<FileHeader>,
   ) -> Result<(), GenericError> {
     self.inner.seek(SeekFrom::Start(index)).unwrap();
-    header_block.to_bytes(&mut self.inner);
+    header_block.to_bytes(&mut self.inner)?;
 
     Ok(())
   }
@@ -518,7 +518,7 @@ where
     title_block: Block<FileTitle>,
   ) -> Result<(), GenericError> {
     self.inner.seek(SeekFrom::Start(index)).unwrap();
-    title_block.to_bytes(&mut self.inner);
+    title_block.to_bytes(&mut self.inner)?;
 
     Ok(())
   }
