@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   )?;
 
   filesystem.insert("hello.txt".into(), "Hello, World!")?;
-  // filesystem.insert("hello2.txt".into(), "Hello, from the filesystem!")?;
+  filesystem.insert("hello2.txt".into(), "Hello, from the filesystem!")?;
 
   Ok(())
 }

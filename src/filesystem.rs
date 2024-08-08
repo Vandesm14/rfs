@@ -650,6 +650,7 @@ where
     // Main Header
     main_header.first_header_ptr = main_header.free_header_ptr;
     main_header.free_title_ptr = free_title_block.next_block;
+    main_header.free_data_ptr = free_data_block.next_block;
     self.write_main_header(main_header).unwrap();
 
     Ok(())
