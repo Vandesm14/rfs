@@ -2,7 +2,7 @@ use std::fs::OpenOptions;
 
 use rfs::filesystem::{
   BlockAlign, BlockKindData, BlockKindHeader, BlockKindMain, BlockKindTitle,
-  Filesystem,
+  File, Filesystem,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,8 +22,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       + BlockKindData::super_block_size(),
   )?;
 
-  filesystem.insert("hello.txt".into(), "Hello, World!")?;
-  filesystem.insert("hello2.txt".into(), "Hello, from the filesystem!")?;
+  filesystem.create(File::new(
+    "hello.txt".to_owned(),
+    "Hello, World!".to_owned(),
+  ))?;
+  filesystem.create(File::new(
+    "hello2.txt".to_owned(),
+    "Hello, from the filesystem!".to_owned(),
+  ))?;
+
+  println!("{:?}", filesystem.list());
+
+  // let string = "Hello".to_owned();
+  // let mut bytes = string.as_bytes().to_vec();
+  // bytes.insert(0, bytes.len() as u8);
+  // bytes.extend_from_slice(&[0, 0, 0, 0]);
+
+  // let bytes_len = bytes.first().unwrap();
+  // let trimmed_bytes = bytes
+  //   .iter()
+  //   .skip(1)
+  //   .take(*bytes_len as usize)
+  //   .copied()
+  //   .collect::<Vec<_>>();
+  // let from_bytes = std::str::from_utf8(&trimmed_bytes);
+
+  // println!("bytes:   {:?}", bytes);
+  // println!("trimmed: {:?}", trimmed_bytes);
+  // println!("string:  {:?}", from_bytes);
 
   Ok(())
 }

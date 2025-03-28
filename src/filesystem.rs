@@ -1,4 +1,4 @@
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 
 use thiserror::Error;
 
@@ -19,6 +19,36 @@ pub trait ToBytes {
   fn to_bytes<W>(&self, writer: &mut W) -> Result<(), io::Error>
   where
     W: Write;
+}
+
+impl ToBytes for String {
+  fn to_bytes<W>(&self, writer: &mut W) -> Result<(), io::Error>
+  where
+    W: Write,
+  {
+    let bytes = self.as_bytes();
+    let len = bytes.len();
+    writer.write_all(&len.to_le_bytes())?;
+    writer.write_all(bytes)?;
+    Ok(())
+  }
+}
+
+impl FromBytes for String {
+  fn from_bytes<R>(reader: &mut R) -> Result<Self, io::Error>
+  where
+    R: Read,
+  {
+    let mut len = [0; 1];
+    reader.read_exact(&mut len)?;
+    let len = u8::from_le_bytes(len);
+    let mut bytes = vec![0; len as usize];
+    reader.read_exact(&mut bytes)?;
+
+    println!("bytes: {:?}", bytes);
+
+    Ok(String::from_utf8(bytes).unwrap())
+  }
 }
 
 pub trait BlockAlign {
@@ -43,6 +73,24 @@ pub trait BlockAlign {
   }
 
   fn initial_header() -> Vec<u8>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct File<T>
+where
+  T: ToBytes + FromBytes,
+{
+  title: String,
+  data: T,
+}
+
+impl<T> File<T>
+where
+  T: ToBytes + FromBytes,
+{
+  pub fn new(title: String, data: T) -> Self {
+    Self { title, data }
+  }
 }
 
 #[repr(C)]
@@ -549,9 +597,9 @@ where
     Ok(Some(block))
   }
 
-  pub fn insert<D>(&mut self, name: String, data: D) -> Result<(), GenericError>
+  pub fn create<D>(&mut self, file: File<D>) -> Result<(), GenericError>
   where
-    D: AsRef<[u8]>,
+    D: ToBytes + FromBytes,
   {
     let mut main_header = self.read_main_header().unwrap();
 
@@ -580,33 +628,33 @@ where
       .read_block(main_header.free_data_ptr)?
       .unwrap_or_else(|| todo!("no data block"));
 
-    let mut title_bytes: [u8; 16] = [0; 16];
-    if title_bytes.len() > 16 {
-      todo!("cannot store files with names greater than 16 bytes");
-    }
-    for (i, byte) in name.as_bytes().iter().enumerate().take(112) {
-      title_bytes[i] = *byte;
-    }
+    let mut title_bytes = file.title.as_bytes().to_vec();
+    title_bytes.insert(0, title_bytes.len() as u8);
+    title_bytes.extend_from_slice(&[0, 0, 0, 0]);
+
+    let mut title_chunk: [u8; 16] = [0; 16];
+    let len = title_bytes.len().min(16);
+    title_chunk[..len].copy_from_slice(&title_bytes[..len]);
 
     let title_block = Block {
       prev_block: 0,
       next_block: 0,
-      data: FileTitle { data: title_bytes },
+      data: FileTitle { data: title_chunk },
     };
 
-    let mut data_bytes: [u8; 112] = [0; 112];
-    if data_bytes.len() > 112 {
-      todo!("cannot store files with data greater than 112 bytes");
-    }
-    for (i, byte) in data.as_ref().bytes().enumerate().take(112) {
-      data_bytes[i] = byte?;
-    }
+    // let mut data_bytes: [u8; 112] = [0; 112];
+    // if data_bytes.len() > 112 {
+    //   todo!("cannot store files with data greater than 112 bytes");
+    // }
+    // for (i, byte) in data.as_ref().bytes().enumerate().take(112) {
+    //   data_bytes[i] = byte?;
+    // }
 
-    let data_block = Block {
-      prev_block: 0,
-      next_block: 0,
-      data: FileData { data: data_bytes },
-    };
+    // let data_block = Block {
+    //   prev_block: 0,
+    //   next_block: 0,
+    //   data: FileData { data: data_bytes },
+    // };
 
     // Write Ops
     self
@@ -615,9 +663,9 @@ where
     self
       .write_block(main_header.free_title_ptr, title_block)
       .unwrap();
-    self
-      .write_block(main_header.free_data_ptr, data_block)
-      .unwrap();
+    // self
+    //   .write_block(main_header.free_data_ptr, data_block)
+    //   .unwrap();
 
     // Main Header
     main_header.first_header_ptr = main_header.free_header_ptr;
@@ -626,5 +674,27 @@ where
     self.write_main_header(main_header).unwrap();
 
     Ok(())
+  }
+
+  pub fn list(&mut self) -> Result<Option<String>, GenericError> {
+    let main = self.read_main_header()?;
+
+    let first_header = self.read_header_block(main.first_header_ptr)?;
+    if let Some(first_header) = first_header {
+      let first_title =
+        self.read_block::<FileTitle>(first_header.data.start_title_block)?;
+
+      return Ok(first_title.map(|t| {
+        let bytes = t.data.data;
+        let mut reader = Cursor::new(Vec::new());
+        reader.write_all(&bytes).unwrap();
+
+        let _ = reader.rewind();
+
+        String::from_bytes(&mut reader).unwrap()
+      }));
+    }
+
+    Ok(None)
   }
 }
