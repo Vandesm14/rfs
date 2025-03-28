@@ -160,7 +160,7 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Block<T>
 where
-  T: ?Sized + ToBytes + FromBytes,
+  T: ToBytes + FromBytes,
 {
   prev_block: u64,
   next_block: u64,
@@ -169,7 +169,7 @@ where
 
 impl<T> ToBytes for Block<T>
 where
-  T: ?Sized + ToBytes + FromBytes,
+  T: ToBytes + FromBytes,
 {
   fn to_bytes<W>(&self, writer: &mut W) -> Result<(), io::Error>
   where
@@ -184,7 +184,7 @@ where
 
 impl<T> FromBytes for Block<T>
 where
-  T: ?Sized + ToBytes + FromBytes,
+  T: ToBytes + FromBytes,
 {
   fn from_bytes<R>(reader: &mut R) -> Result<Self, io::Error>
   where
@@ -501,35 +501,16 @@ where
     Ok(())
   }
 
-  fn write_header_block(
+  fn write_block<B>(
     &mut self,
     index: u64,
-    header_block: Block<FileHeader>,
-  ) -> Result<(), GenericError> {
+    block: Block<B>,
+  ) -> Result<(), GenericError>
+  where
+    B: ToBytes + FromBytes,
+  {
     self.inner.seek(SeekFrom::Start(index)).unwrap();
-    header_block.to_bytes(&mut self.inner)?;
-
-    Ok(())
-  }
-
-  fn write_title_block(
-    &mut self,
-    index: u64,
-    title_block: Block<FileTitle>,
-  ) -> Result<(), GenericError> {
-    self.inner.seek(SeekFrom::Start(index)).unwrap();
-    title_block.to_bytes(&mut self.inner)?;
-
-    Ok(())
-  }
-
-  fn write_data_block(
-    &mut self,
-    index: u64,
-    data_block: Block<FileData>,
-  ) -> Result<(), GenericError> {
-    self.inner.seek(SeekFrom::Start(index)).unwrap();
-    data_block.to_bytes(&mut self.inner)?;
+    block.to_bytes(&mut self.inner)?;
 
     Ok(())
   }
@@ -553,28 +534,19 @@ where
     Ok(Some(header_block))
   }
 
-  fn read_title_block(
+  fn read_block<B>(
     &mut self,
     index: u64,
-  ) -> Result<Option<Block<FileTitle>>, GenericError> {
+  ) -> Result<Option<Block<B>>, GenericError>
+  where
+    B: ToBytes + FromBytes,
+  {
     if index == 0 {
       return Ok(None);
     }
     self.inner.seek(SeekFrom::Start(index)).unwrap();
-    let title_block: Block<FileTitle> = Block::from_bytes(&mut self.inner)?;
-    Ok(Some(title_block))
-  }
-
-  fn read_data_block(
-    &mut self,
-    index: u64,
-  ) -> Result<Option<Block<FileData>>, GenericError> {
-    if index == 0 {
-      return Ok(None);
-    }
-    self.inner.seek(SeekFrom::Start(index)).unwrap();
-    let data_block: Block<FileData> = Block::from_bytes(&mut self.inner)?;
-    Ok(Some(data_block))
+    let block: Block<B> = Block::from_bytes(&mut self.inner)?;
+    Ok(Some(block))
   }
 
   pub fn insert<D>(&mut self, name: String, data: D) -> Result<(), GenericError>
@@ -601,11 +573,11 @@ where
       },
     };
 
-    let free_title_block = self
-      .read_title_block(main_header.free_title_ptr)?
+    let free_title_block: Block<FileTitle> = self
+      .read_block(main_header.free_title_ptr)?
       .unwrap_or_else(|| todo!("no title block"));
-    let free_data_block = self
-      .read_data_block(main_header.free_data_ptr)?
+    let free_data_block: Block<FileData> = self
+      .read_block(main_header.free_data_ptr)?
       .unwrap_or_else(|| todo!("no data block"));
 
     let mut title_bytes: [u8; 16] = [0; 16];
@@ -638,13 +610,13 @@ where
 
     // Write Ops
     self
-      .write_header_block(main_header.free_header_ptr, header_block)
+      .write_block(main_header.free_header_ptr, header_block)
       .unwrap();
     self
-      .write_title_block(main_header.free_title_ptr, title_block)
+      .write_block(main_header.free_title_ptr, title_block)
       .unwrap();
     self
-      .write_data_block(main_header.free_data_ptr, data_block)
+      .write_block(main_header.free_data_ptr, data_block)
       .unwrap();
 
     // Main Header
